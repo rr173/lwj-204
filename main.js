@@ -498,12 +498,15 @@ canvas.addEventListener('mousedown', (e) => {
         selectedNodes.delete(node.id);
       }
       mouseState.mode = null;
+    } else if (node.selected) {
+      mouseState.mode = 'drag';
+      mouseState.dragNode = node;
     } else {
       clearSelection();
       node.selected = true;
       selectedNodes.add(node.id);
-      mouseState.mode = 'drag';
-      mouseState.dragNode = node;
+      mouseState.mode = 'pending';
+      mouseState.pendingNode = node;
     }
   } else if (member) {
     if (e.ctrlKey || e.metaKey) {
@@ -539,6 +542,12 @@ canvas.addEventListener('mousemove', (e) => {
   const dx = pos.x - mouseState.startX;
   const dy = pos.y - mouseState.startY;
   const dist = Math.sqrt(dx * dx + dy * dy);
+  
+  if (mouseState.mode === 'pending' && mouseState.pendingNode && dist > 5) {
+    mouseState.mode = 'createMember';
+    mouseState.createMemberStart = mouseState.pendingNode;
+    mouseState.pendingNode = null;
+  }
   
   if (mouseState.mode === 'drag' && mouseState.dragNode) {
     const node = mouseState.dragNode;
@@ -616,6 +625,7 @@ canvas.addEventListener('mouseup', (e) => {
   mouseState.mode = null;
   mouseState.dragNode = null;
   mouseState.createMemberStart = null;
+  mouseState.pendingNode = null;
   selectionBox = null;
   previewLine = null;
   
