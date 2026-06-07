@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>二维桁架结构力学分析器</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app-container">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <button id="btn-solve" class="btn btn-primary">求解</button>
+        <button id="btn-clear" class="btn">清空</button>
+        <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
+        <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
+        <button id="btn-export" class="btn">导出JSON</button>
+      </div>
+      <div class="toolbar-right">
+        <label>
+          位移放大系数:
+          <input type="number" id="scale-factor" value="100" min="1" max="1000" step="10" />
+        </label>
+      </div>
+    </div>
+    
+    <div class="canvas-container">
+      <canvas id="canvas"></canvas>
+      <div id="context-menu" class="context-menu hidden">
+        <div class="menu-items"></div>
+      </div>
+      <div id="tooltip" class="tooltip hidden"></div>
+      <div id="status-bar" class="status-bar"></div>
+    </div>
+    
+    <div class="info-panel">
+      <div class="panel-section">
+        <h3>操作说明</h3>
+        <ul>
+          <li>点击空白处创建节点</li>
+          <li>从节点拖拽到另一节点创建杆件</li>
+          <li>右键节点设置支座和荷载</li>
+          <li>右键杆件设置材料属性</li>
+          <li>拖拽移动节点</li>
+          <li>框选后按Delete删除</li>
+          <li>Ctrl+Z撤销, Ctrl+Y重做</li>
+        </ul>
+      </div>
+      <div class="panel-section">
+        <h3>图例</h3>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #1e88e5"></span>
+          <span>拉力 (Tension)</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #e53935"></span>
+          <span>压力 (Compression)</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #9e9e9e"></span>
+          <span>零力杆</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-line" style="border-style: dashed"></span>
+          <span>变形图</span>
+        </div>
+      </div>
+      <div class="panel-section" id="results-section">
+        <h3>求解结果</h3>
+        <div id="results-content">点击"求解"按钮开始计算</div>
+      </div>
+    </div>
+  </div>
+  
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="modal-footer">
+        <button id="modal-cancel" class="btn">取消</button>
+        <button id="modal-confirm" class="btn btn-primary">确定</button>
+      </div>
+    </div>
+  </div>
+  
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
