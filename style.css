@@ -316,3 +316,156 @@ body {
   pointer-events: none;
   z-index: 500;
 }
+
+.view-mode-group {
+  display: flex;
+  gap: 0;
+  margin-right: 10px;
+}
+
+.view-mode-group .btn {
+  border-radius: 0;
+  border-right: none;
+}
+
+.view-mode-group .btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.view-mode-group .btn:last-child {
+  border-radius: 0 4px 4px 0;
+  border-right: 1px solid #ccc;
+}
+
+.view-mode-group .btn.active {
+  background: #1976d2;
+  color: #fff;
+  border-color: #1976d2;
+}
+
+.loadcase-header {
+  margin-bottom: 10px;
+}
+
+.btn-small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.loadcase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.loadcase-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.loadcase-item:hover {
+  background: #e8e8e8;
+}
+
+.loadcase-item.active {
+  background: #e3f2fd;
+  border-color: #1976d2;
+}
+
+.loadcase-item.solved {
+  position: relative;
+}
+
+.loadcase-item.solved::after {
+  content: "✓";
+  color: #4caf50;
+  font-weight: bold;
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.loadcase-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: text;
+}
+
+.loadcase-name input {
+  width: 100%;
+  padding: 2px 4px;
+  font-size: 13px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.loadcase-delete {
+  color: #999;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: all 0.2s;
+}
+
+.loadcase-delete:hover {
+  color: #e53935;
+  background: #ffebee;
+}
+
+.envelope-force-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.envelope-label-tension {
+  color: #1565c0;
+  font-weight: bold;
+  background: rgba(255,255,255,0.8);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.envelope-label-compression {
+  color: #c62828;
+  font-weight: bold;
+  background: rgba(255,255,255,0.8);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.overlimit-item {
+  padding: 8px;
+  background: #fff8e1;
+  border-left: 3px solid #ffc107;
+  margin-bottom: 6px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.overlimit-item strong {
+  color: #e65100;
+}
+
+#envelope-summary {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+#overlimit-list h4 {
+  font-size: 13px;
+  color: #e65100;
+  margin-bottom: 8px;
+}

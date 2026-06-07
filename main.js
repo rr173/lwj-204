@@ -3,11 +3,14 @@ import { Renderer } from './src/renderer.js';
 import { createNode, createMember, deepClone } from './src/core.js';
 import { solveTruss } from './src/solver.js';
 import { HistoryManager } from './src/history.js';
-import { createWarrenTruss } from './src/presets.js';
+import { createWarrenTruss, createDefaultLoadCases } from './src/presets.js';
 
 const canvas = document.getElementById('canvas');
 const renderer = new Renderer(canvas);
 const historyManager = new HistoryManager();
+
+const STORAGE_KEY = 'truss-analyzer-data';
+const YIELD_STRESS = 235e6;
 
 let nodes = [];
 let members = [];
@@ -16,6 +19,11 @@ let maxForce = 0;
 
 let selectedNodes = new Set();
 let selectedMembers = new Set();
+
+let loadCases = [];
+let currentLoadCaseId = null;
+let viewMode = 'single';
+let envelopeData = null;
 
 let mouseState = {
   isDown: false,
@@ -32,28 +40,491 @@ let previewLine = null;
 let hoveredMember = null;
 let contextMenuTarget = null;
 
-function init() {
-  renderer.resize();
-  
-  const warren = createWarrenTruss();
-  nodes = warren.nodes;
-  members = warren.members;
-  
-  historyManager.saveState(nodes, members);
-  
+function getCurrentLoadCase() {
+  return loadCases.find(lc => lc.id === currentLoadCaseId);
+}
+
+function applyLoadCaseToNodes(loadCase) {
+  if (!loadCase) return;
+  nodes.forEach(node => {
+    const nodeLoad = loadCase.nodeLoads[node.id];
+    if (nodeLoad) {
+      node.fx = nodeLoad.fx || 0;
+      node.fy = nodeLoad.fy || 0;
+    } else {
+      node.fx = 0;
+      node.fy = 0;
+    }
+  });
+}
+
+function saveCurrentLoadCaseFromNodes() {
+  const lc = getCurrentLoadCase();
+  if (!lc) return;
+  lc.nodeLoads = {};
+  nodes.forEach(node => {
+    lc.nodeLoads[node.id] = { fx: node.fx || 0, fy: node.fy || 0 };
+  });
+}
+
+function createLoadCase(name) {
+  const id = 'lc_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  return {
+    id,
+    name,
+    nodeLoads: {},
+    solved: false,
+    results: null
+  };
+}
+
+function addLoadCase(name) {
+  const lc = createLoadCase(name);
+  loadCases.push(lc);
+  currentLoadCaseId = lc.id;
+  applyLoadCaseToNodes(lc);
+  hasResults = false;
+  renderer.hasResults = false;
+  updateLoadCaseList();
+  saveToStorage();
+  render();
+  updateResultsDisplay();
+}
+
+function deleteLoadCase(id) {
+  if (loadCases.length <= 1) {
+    alert('至少保留一个工况');
+    return;
+  }
+  const index = loadCases.findIndex(lc => lc.id === id);
+  loadCases.splice(index, 1);
+  if (currentLoadCaseId === id) {
+    currentLoadCaseId = loadCases[0].id;
+    applyLoadCaseToNodes(getCurrentLoadCase());
+    const lc = getCurrentLoadCase();
+    if (lc.solved && lc.results) {
+      restoreResults(lc.results);
+    } else {
+      hasResults = false;
+      renderer.hasResults = false;
+    }
+  }
+  updateLoadCaseList();
+  updateEnvelopeIfNeeded();
+  saveToStorage();
+  render();
+  updateResultsDisplay();
+}
+
+function renameLoadCase(id, newName) {
+  const lc = loadCases.find(lc => lc.id === id);
+  if (lc) {
+    lc.name = newName;
+    updateLoadCaseList();
+    saveToStorage();
+  }
+}
+
+function switchLoadCase(id) {
+  saveCurrentLoadCaseFromNodes();
+  currentLoadCaseId = id;
+  applyLoadCaseToNodes(getCurrentLoadCase());
+  const lc = getCurrentLoadCase();
+  if (lc.solved && lc.results) {
+    restoreResults(lc.results);
+  } else {
+    hasResults = false;
+    renderer.hasResults = false;
+  }
+  viewMode = 'single';
+  renderer.viewMode = 'single';
+  updateViewModeButtons();
+  updateLoadCaseList();
+  render();
+  updateResultsDisplay();
+}
+
+function restoreResults(results) {
+  if (!results) return;
+  results.nodes.forEach(rn => {
+    const node = nodes.find(n => n.id === rn.id);
+    if (node) {
+      node.dx = rn.dx;
+      node.dy = rn.dy;
+    }
+  });
+  results.members.forEach(rm => {
+    const member = members.find(m => m.id === rm.id);
+    if (member) {
+      member.axialForce = rm.axialForce;
+      member.stress = rm.stress;
+    }
+  });
+  maxForce = results.maxForce;
+  hasResults = true;
+  renderer.hasResults = true;
+  renderer.maxForce = maxForce;
+}
+
+function solveCurrentLoadCase() {
   try {
+    saveCurrentLoadCaseFromNodes();
     const result = solveTruss(nodes, members);
     maxForce = result.maxForce;
     hasResults = true;
     renderer.hasResults = true;
     renderer.maxForce = maxForce;
+    
+    const lc = getCurrentLoadCase();
+    if (lc) {
+      lc.solved = true;
+      lc.results = deepClone(result);
+    }
+    
+    updateLoadCaseList();
+    updateEnvelopeIfNeeded();
     updateResultsDisplay();
+    render();
+    updateStatus('求解成功!');
+    saveToStorage();
   } catch (e) {
-    console.warn('初始求解失败:', e.message);
+    alert('求解失败: ' + e.message);
+    updateStatus('求解失败: ' + e.message);
+  }
+}
+
+function solveAllLoadCases() {
+  let successCount = 0;
+  let failCount = 0;
+  
+  const originalLoadCaseId = currentLoadCaseId;
+  
+  for (const lc of loadCases) {
+    try {
+      currentLoadCaseId = lc.id;
+      applyLoadCaseToNodes(lc);
+      const result = solveTruss(nodes, members);
+      lc.solved = true;
+      lc.results = deepClone(result);
+      successCount++;
+    } catch (e) {
+      lc.solved = false;
+      lc.results = null;
+      failCount++;
+    }
   }
   
+  currentLoadCaseId = originalLoadCaseId;
+  applyLoadCaseToNodes(getCurrentLoadCase());
+  const lc = getCurrentLoadCase();
+  if (lc.solved && lc.results) {
+    restoreResults(lc.results);
+  }
+  
+  updateLoadCaseList();
+  updateEnvelopeIfNeeded();
+  updateResultsDisplay();
   render();
+  updateStatus(`批量求解完成: 成功 ${successCount} 个, 失败 ${failCount} 个`);
+  saveToStorage();
+}
+
+function calculateEnvelope() {
+  const solvedCases = loadCases.filter(lc => lc.solved && lc.results);
+  if (solvedCases.length === 0) {
+    envelopeData = null;
+    return null;
+  }
+  
+  const envelope = new Map();
+  
+  members.forEach(member => {
+    let maxTension = -Infinity;
+    let maxCompression = Infinity;
+    let maxTensionStress = 0;
+    let maxCompressionStress = 0;
+    let maxTensionCase = null;
+    let maxCompressionCase = null;
+    
+    solvedCases.forEach(lc => {
+      const memberResult = lc.results.members.find(m => m.id === member.id);
+      if (memberResult) {
+        if (memberResult.axialForce > 0 && memberResult.axialForce > maxTension) {
+          maxTension = memberResult.axialForce;
+          maxTensionStress = memberResult.stress;
+          maxTensionCase = lc.name;
+        }
+        if (memberResult.axialForce < 0 && memberResult.axialForce < maxCompression) {
+          maxCompression = memberResult.axialForce;
+          maxCompressionStress = memberResult.stress;
+          maxCompressionCase = lc.name;
+        }
+      }
+    });
+    
+    if (maxTension === -Infinity) maxTension = 0;
+    if (maxCompression === Infinity) maxCompression = 0;
+    
+    envelope.set(member.id, {
+      maxTension,
+      maxCompression,
+      maxTensionStress,
+      maxCompressionStress,
+      maxTensionCase,
+      maxCompressionCase
+    });
+  });
+  
+  return envelope;
+}
+
+function updateEnvelopeIfNeeded() {
+  envelopeData = calculateEnvelope();
+  if (envelopeData) {
+    let globalMaxForce = 0;
+    for (const info of envelopeData.values()) {
+      globalMaxForce = Math.max(globalMaxForce, Math.abs(info.maxTension), Math.abs(info.maxCompression));
+    }
+    renderer.envelopeData = envelopeData;
+    if (viewMode === 'envelope') {
+      renderer.maxForce = globalMaxForce;
+    }
+  } else {
+    renderer.envelopeData = null;
+  }
+  updateEnvelopeDisplay();
+}
+
+function setViewMode(mode) {
+  viewMode = mode;
+  renderer.viewMode = mode;
+  
+  if (mode === 'envelope') {
+    updateEnvelopeIfNeeded();
+    if (envelopeData) {
+      let globalMaxForce = 0;
+      for (const info of envelopeData.values()) {
+        globalMaxForce = Math.max(globalMaxForce, Math.abs(info.maxTension), Math.abs(info.maxCompression));
+      }
+      renderer.maxForce = globalMaxForce;
+    }
+    document.getElementById('envelope-section').style.display = 'block';
+  } else {
+    document.getElementById('envelope-section').style.display = 'none';
+    if (hasResults) {
+      renderer.maxForce = maxForce;
+    }
+  }
+  
+  updateViewModeButtons();
+  updateEnvelopeDisplay();
+  render();
+  updateResultsDisplay();
+}
+
+function updateViewModeButtons() {
+  document.getElementById('btn-view-single').classList.toggle('active', viewMode === 'single');
+  document.getElementById('btn-view-envelope').classList.toggle('active', viewMode === 'envelope');
+}
+
+function updateLoadCaseList() {
+  const container = document.getElementById('loadcase-list');
+  container.innerHTML = '';
+  
+  loadCases.forEach(lc => {
+    const item = document.createElement('div');
+    item.className = 'loadcase-item';
+    if (lc.id === currentLoadCaseId) item.classList.add('active');
+    if (lc.solved) item.classList.add('solved');
+    
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'loadcase-name';
+    nameSpan.textContent = lc.name;
+    nameSpan.ondblclick = (e) => {
+      e.stopPropagation();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = lc.name;
+      nameSpan.innerHTML = '';
+      nameSpan.appendChild(input);
+      input.focus();
+      input.select();
+      input.onblur = () => {
+        const newName = input.value.trim() || lc.name;
+        renameLoadCase(lc.id, newName);
+      };
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') input.blur();
+        if (e.key === 'Escape') {
+          nameSpan.textContent = lc.name;
+        }
+      };
+    };
+    
+    const deleteBtn = document.createElement('span');
+    deleteBtn.className = 'loadcase-delete';
+    deleteBtn.textContent = '×';
+    deleteBtn.title = '删除工况';
+    deleteBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (confirm(`确定删除工况"${lc.name}"吗？`)) {
+        deleteLoadCase(lc.id);
+      }
+    };
+    
+    item.onclick = () => switchLoadCase(lc.id);
+    item.appendChild(nameSpan);
+    item.appendChild(deleteBtn);
+    container.appendChild(item);
+  });
+}
+
+function updateEnvelopeDisplay() {
+  const summary = document.getElementById('envelope-summary');
+  const overlimitList = document.getElementById('overlimit-list');
+  
+  if (!envelopeData || viewMode !== 'envelope') {
+    summary.innerHTML = '';
+    overlimitList.innerHTML = '';
+    return;
+  }
+  
+  const solvedCount = loadCases.filter(lc => lc.solved).length;
+  summary.innerHTML = `已求解 ${solvedCount} 个工况，共 ${members.length} 根杆件`;
+  
+  const overlimitMembers = [];
+  for (const [memberId, info] of envelopeData.entries()) {
+    const member = members.find(m => m.id === memberId);
+    const maxStress = Math.max(Math.abs(info.maxTensionStress), Math.abs(info.maxCompressionStress));
+    if (maxStress > YIELD_STRESS) {
+      const safetyFactor = YIELD_STRESS / maxStress;
+      overlimitMembers.push({
+        member,
+        info,
+        maxStress,
+        safetyFactor
+      });
+    }
+  }
+  
+  if (overlimitMembers.length > 0) {
+    let html = '<h4>⚠ 应力超限杆件</h4>';
+    overlimitMembers.forEach(item => {
+      const forceType = Math.abs(item.info.maxTensionStress) >= Math.abs(item.info.maxCompressionStress) 
+        ? '拉力' : '压力';
+      const caseName = Math.abs(item.info.maxTensionStress) >= Math.abs(item.info.maxCompressionStress)
+        ? item.info.maxTensionCase : item.info.maxCompressionCase;
+      html += `<div class="overlimit-item">`;
+      html += `<strong>杆件 #${item.member.id}</strong><br/>`;
+      html += `最大应力: ${(item.maxStress / 1e6).toFixed(2)} MPa (${forceType})<br/>`;
+      html += `安全系数: ${item.safetyFactor.toFixed(3)}<br/>`;
+      html += `<small>来自工况: ${caseName}</small>`;
+      html += `</div>`;
+    });
+    overlimitList.innerHTML = html;
+  } else {
+    overlimitList.innerHTML = '<div style="font-size:12px;color:#4caf50;padding:8px 0;">✓ 所有杆件应力均在安全范围内</div>';
+  }
+}
+
+function saveToStorage() {
+  try {
+    const data = {
+      nodes: nodes.map(n => ({
+        id: n.id,
+        x: n.x,
+        y: n.y,
+        support: n.support
+      })),
+      members: members.map(m => ({
+        id: m.id,
+        node1Id: m.node1Id,
+        node2Id: m.node2Id,
+        length: m.length,
+        angle: m.angle,
+        E: m.E,
+        A: m.A
+      })),
+      loadCases: loadCases,
+      currentLoadCaseId
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.warn('保存到localStorage失败:', e);
+  }
+}
+
+function loadFromStorage() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return false;
+    
+    const data = JSON.parse(stored);
+    if (!data.nodes || !data.members || !data.loadCases || data.loadCases.length === 0) {
+      return false;
+    }
+    
+    nodes = data.nodes.map(n => ({
+      ...n,
+      fx: 0,
+      fy: 0,
+      dx: 0,
+      dy: 0,
+      selected: false
+    }));
+    
+    members = data.members.map(m => ({
+      ...m,
+      axialForce: 0,
+      stress: 0,
+      selected: false
+    }));
+    
+    loadCases = data.loadCases;
+    currentLoadCaseId = data.currentLoadCaseId || loadCases[0].id;
+    
+    applyLoadCaseToNodes(getCurrentLoadCase());
+    
+    const lc = getCurrentLoadCase();
+    if (lc.solved && lc.results) {
+      restoreResults(lc.results);
+    }
+    
+    return true;
+  } catch (e) {
+    console.warn('从localStorage加载失败:', e);
+    return false;
+  }
+}
+
+function init() {
+  renderer.resize();
+  
+  const loaded = loadFromStorage();
+  
+  if (!loaded) {
+    const warren = createWarrenTruss();
+    nodes = warren.nodes;
+    members = warren.members;
+    loadCases = createDefaultLoadCases(nodes);
+    currentLoadCaseId = loadCases[0].id;
+    applyLoadCaseToNodes(getCurrentLoadCase());
+    
+    try {
+      solveAllLoadCases();
+    } catch (e) {
+      console.warn('初始求解失败:', e.message);
+    }
+  } else {
+    updateEnvelopeIfNeeded();
+  }
+  
+  historyManager.saveState(nodes, members);
+  
+  render();
+  updateLoadCaseList();
   updateButtonStates();
+  updateResultsDisplay();
 }
 
 function render() {
@@ -191,16 +662,30 @@ function deleteSelected() {
   nodes = nodes.filter(n => !selectedNodes.has(n.id));
   members = members.filter(m => !memberIdsToDelete.has(m.id));
   
+  loadCases.forEach(lc => {
+    selectedNodes.forEach(nodeId => {
+      delete lc.nodeLoads[nodeId];
+    });
+    lc.solved = false;
+    lc.results = null;
+  });
+  
   selectedNodes.clear();
   selectedMembers.clear();
   
   hasResults = false;
   renderer.hasResults = false;
   
+  envelopeData = null;
+  renderer.envelopeData = null;
+  
   historyManager.saveState(nodes, members);
+  updateLoadCaseList();
   updateButtonStates();
   render();
   updateResultsDisplay();
+  updateEnvelopeDisplay();
+  saveToStorage();
 }
 
 function showContextMenu(e, target) {
@@ -260,33 +745,62 @@ function addMenuSeparator(container) {
 
 function setSupport(node, type) {
   node.support = type;
+  loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
   hasResults = false;
   renderer.hasResults = false;
+  envelopeData = null;
+  renderer.envelopeData = null;
   historyManager.saveState(nodes, members);
+  updateLoadCaseList();
   updateButtonStates();
   render();
   updateResultsDisplay();
+  updateEnvelopeDisplay();
+  saveToStorage();
 }
 
 function deleteNode(node) {
   nodes = nodes.filter(n => n.id !== node.id);
   members = members.filter(m => m.node1Id !== node.id && m.node2Id !== node.id);
+  
+  loadCases.forEach(lc => {
+    delete lc.nodeLoads[node.id];
+    lc.solved = false;
+    lc.results = null;
+  });
+  
   hasResults = false;
   renderer.hasResults = false;
+  envelopeData = null;
+  renderer.envelopeData = null;
   historyManager.saveState(nodes, members);
+  updateLoadCaseList();
   updateButtonStates();
   render();
   updateResultsDisplay();
+  updateEnvelopeDisplay();
+  saveToStorage();
 }
 
 function deleteMember(member) {
   members = members.filter(m => m.id !== member.id);
+  
+  loadCases.forEach(lc => {
+    lc.solved = false;
+    lc.results = null;
+  });
+  
   hasResults = false;
   renderer.hasResults = false;
+  envelopeData = null;
+  renderer.envelopeData = null;
   historyManager.saveState(nodes, members);
+  updateLoadCaseList();
   updateButtonStates();
   render();
   updateResultsDisplay();
+  updateEnvelopeDisplay();
+  saveToStorage();
 }
 
 function showModal(title, bodyHtml, onConfirm) {
@@ -325,17 +839,25 @@ function showLoadDialog(node) {
       </div>
     </div>
     <p style="font-size:12px;color:#666;">正值向右/向上，负值向左/向下</p>
+    <p style="font-size:12px;color:#1976d2;margin-top:8px;">当前工况: ${getCurrentLoadCase()?.name || ''}</p>
   `;
   
   showModal('施加外力', html, () => {
     node.fx = parseFloat(document.getElementById('input-fx').value) || 0;
     node.fy = parseFloat(document.getElementById('input-fy').value) || 0;
+    saveCurrentLoadCaseFromNodes();
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    envelopeData = null;
+    renderer.envelopeData = null;
     historyManager.saveState(nodes, members);
+    updateLoadCaseList();
     updateButtonStates();
     render();
     updateResultsDisplay();
+    updateEnvelopeDisplay();
+    saveToStorage();
   });
 }
 
@@ -357,12 +879,18 @@ function showMemberDialog(member) {
   showModal('杆件属性', html, () => {
     member.E = (parseFloat(document.getElementById('input-e').value) || 200) * 1e9;
     member.A = (parseFloat(document.getElementById('input-a').value) || 10) * 1e-4;
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    envelopeData = null;
+    renderer.envelopeData = null;
     historyManager.saveState(nodes, members);
+    updateLoadCaseList();
     updateButtonStates();
     render();
     updateResultsDisplay();
+    updateEnvelopeDisplay();
+    saveToStorage();
   });
 }
 
@@ -373,21 +901,41 @@ function updateTooltip(e) {
   const member = findMemberAt(pos.x, pos.y);
   hoveredMember = member;
   
-  if (member && hasResults) {
-    const n1 = nodes.find(n => n.id === member.node1Id);
-    const n2 = nodes.find(n => n.id === member.node2Id);
-    
-    const force = member.axialForce;
-    const stress = member.stress;
-    const yieldStress = 235e6;
-    const isYielding = Math.abs(stress) > yieldStress;
-    
+  if (member) {
     let html = `<strong>杆件 #${member.id}</strong><br/>`;
-    html += `轴力: ${(force / 1000).toFixed(2)} kN (${force > 0 ? '拉力' : force < 0 ? '压力' : '零力'})<br/>`;
-    html += `应力: ${(stress / 1e6).toFixed(2)} MPa<br/>`;
-    html += `长度: ${member.length.toFixed(1)} mm<br/>`;
-    if (isYielding) {
-      html += `<span style="color:#ff5252;font-weight:bold;">⚠ 已屈服!</span>`;
+    
+    if (viewMode === 'envelope' && envelopeData) {
+      const info = envelopeData.get(member.id);
+      if (info) {
+        const maxStress = Math.max(Math.abs(info.maxTensionStress), Math.abs(info.maxCompressionStress));
+        const isOverLimit = maxStress > YIELD_STRESS;
+        
+        html += `<span style="color:#1565c0;">最大拉力: ${(info.maxTension / 1000).toFixed(2)} kN</span><br/>`;
+        html += `<small style="color:#666;">来自工况: ${info.maxTensionCase}</small><br/>`;
+        html += `<span style="color:#c62828;">最大压力: ${(Math.abs(info.maxCompression) / 1000).toFixed(2)} kN</span><br/>`;
+        html += `<small style="color:#666;">来自工况: ${info.maxCompressionCase}</small><br/>`;
+        html += `最大应力: ${(maxStress / 1e6).toFixed(2)} MPa<br/>`;
+        html += `长度: ${member.length.toFixed(1)} mm<br/>`;
+        if (isOverLimit) {
+          const sf = YIELD_STRESS / maxStress;
+          html += `<span style="color:#ff5252;font-weight:bold;">⚠ 应力超限! 安全系数: ${sf.toFixed(3)}</span>`;
+        }
+      }
+    } else if (hasResults) {
+      const force = member.axialForce;
+      const stress = member.stress;
+      const isYielding = Math.abs(stress) > YIELD_STRESS;
+      
+      html += `轴力: ${(force / 1000).toFixed(2)} kN (${force > 0 ? '拉力' : force < 0 ? '压力' : '零力'})<br/>`;
+      html += `应力: ${(stress / 1e6).toFixed(2)} MPa<br/>`;
+      html += `长度: ${member.length.toFixed(1)} mm<br/>`;
+      if (isYielding) {
+        const sf = YIELD_STRESS / Math.abs(stress);
+        html += `<span style="color:#ff5252;font-weight:bold;">⚠ 已屈服! 安全系数: ${sf.toFixed(3)}</span>`;
+      }
+    } else {
+      html += `长度: ${member.length.toFixed(1)} mm<br/>`;
+      html += `<span style="color:#999;">未求解</span>`;
     }
     
     tooltip.innerHTML = html;
@@ -402,12 +950,43 @@ function updateTooltip(e) {
 function updateResultsDisplay() {
   const container = document.getElementById('results-content');
   
+  if (viewMode === 'envelope') {
+    if (!envelopeData) {
+      container.innerHTML = '请先对至少一个工况进行求解';
+      return;
+    }
+    
+    let html = '';
+    html += '<div class="result-item"><strong>包络结果</strong></div>';
+    html += `<div class="result-item" style="color:#666;">显示所有工况的极值</div>`;
+    
+    members.forEach(member => {
+      const info = envelopeData.get(member.id);
+      if (!info) return;
+      
+      const maxAbsForce = Math.max(Math.abs(info.maxTension), Math.abs(info.maxCompression));
+      const maxForceType = Math.abs(info.maxTension) >= Math.abs(info.maxCompression) ? '拉' : '压';
+      
+      html += `<div class="result-item">`;
+      html += `杆件 #${member.id}: `;
+      html += `拉${(info.maxTension / 1000).toFixed(2)}kN / `;
+      html += `压${(Math.abs(info.maxCompression) / 1000).toFixed(2)}kN`;
+      html += `</div>`;
+    });
+    
+    container.innerHTML = html;
+    return;
+  }
+  
   if (!hasResults) {
-    container.innerHTML = '点击"求解"按钮开始计算';
+    container.innerHTML = '点击"求解当前工况"按钮开始计算';
     return;
   }
   
   let html = '';
+  
+  html += '<div class="result-item"><strong>当前工况</strong></div>';
+  html += `<div class="result-item" style="color:#1976d2;">${getCurrentLoadCase()?.name || ''}</div>`;
   
   html += '<div class="result-item"><strong>节点位移</strong></div>';
   nodes.forEach(node => {
@@ -459,6 +1038,8 @@ function exportJSON() {
       axialForce: m.axialForce,
       stress: m.stress
     })),
+    loadCases: loadCases,
+    currentLoadCaseId,
     solved: hasResults,
     maxForce: maxForce
   };
@@ -560,8 +1141,11 @@ canvas.addEventListener('mousemove', (e) => {
       }
     });
     
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    envelopeData = null;
+    renderer.envelopeData = null;
   } else if (mouseState.mode === 'select') {
     selectionBox.endX = pos.x;
     selectionBox.endY = pos.y;
@@ -592,10 +1176,21 @@ canvas.addEventListener('mouseup', (e) => {
   if (mouseState.mode === 'createNode' && !mouseState.hasMoved) {
     const newNode = createNode(pos.x, pos.y);
     nodes.push(newNode);
+    
+    loadCases.forEach(lc => {
+      lc.nodeLoads[newNode.id] = { fx: 0, fy: 0 };
+      lc.solved = false;
+      lc.results = null;
+    });
+    
     hasResults = false;
     renderer.hasResults = false;
+    envelopeData = null;
+    renderer.envelopeData = null;
     historyManager.saveState(nodes, members);
+    updateLoadCaseList();
     updateButtonStates();
+    saveToStorage();
   } else if (mouseState.mode === 'createMember' && mouseState.createMemberStart) {
     const endNode = findNodeAt(pos.x, pos.y);
     if (endNode && endNode.id !== mouseState.createMemberStart.id) {
@@ -607,18 +1202,27 @@ canvas.addEventListener('mouseup', (e) => {
       if (!exists) {
         const newMember = createMember(mouseState.createMemberStart, endNode);
         members.push(newMember);
+        
+        loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
         hasResults = false;
         renderer.hasResults = false;
+        envelopeData = null;
+        renderer.envelopeData = null;
         historyManager.saveState(nodes, members);
+        updateLoadCaseList();
         updateButtonStates();
+        saveToStorage();
       }
     }
   } else if (mouseState.mode === 'select') {
     selectInBox(selectionBox);
   } else if (mouseState.mode === 'drag' && mouseState.hasMoved) {
     historyManager.saveState(nodes, members);
+    updateLoadCaseList();
     updateButtonStates();
     updateResultsDisplay();
+    updateEnvelopeDisplay();
+    saveToStorage();
   }
   
   mouseState.isDown = false;
@@ -631,6 +1235,7 @@ canvas.addEventListener('mouseup', (e) => {
   
   render();
   updateResultsDisplay();
+  updateEnvelopeDisplay();
 });
 
 canvas.addEventListener('contextmenu', (e) => {
@@ -670,12 +1275,18 @@ document.addEventListener('keydown', (e) => {
     if (prev) {
       nodes = prev.nodes;
       members = prev.members;
+      loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
       hasResults = false;
       renderer.hasResults = false;
+      envelopeData = null;
+      renderer.envelopeData = null;
       clearSelection();
+      updateLoadCaseList();
       updateButtonStates();
       render();
       updateResultsDisplay();
+      updateEnvelopeDisplay();
+      saveToStorage();
     }
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
     e.preventDefault();
@@ -683,12 +1294,18 @@ document.addEventListener('keydown', (e) => {
     if (next) {
       nodes = next.nodes;
       members = next.members;
+      loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
       hasResults = false;
       renderer.hasResults = false;
+      envelopeData = null;
+      renderer.envelopeData = null;
       clearSelection();
+      updateLoadCaseList();
       updateButtonStates();
       render();
       updateResultsDisplay();
+      updateEnvelopeDisplay();
+      saveToStorage();
     }
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
     if (!e.target.matches('input, textarea')) {
@@ -702,19 +1319,16 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-document.getElementById('btn-solve').addEventListener('click', () => {
-  try {
-    const result = solveTruss(nodes, members);
-    maxForce = result.maxForce;
-    hasResults = true;
-    renderer.hasResults = true;
-    renderer.maxForce = maxForce;
-    updateResultsDisplay();
-    render();
-    updateStatus('求解成功!');
-  } catch (e) {
-    alert('求解失败: ' + e.message);
-    updateStatus('求解失败: ' + e.message);
+document.getElementById('btn-solve').addEventListener('click', solveCurrentLoadCase);
+document.getElementById('btn-solve-all').addEventListener('click', solveAllLoadCases);
+
+document.getElementById('btn-view-single').addEventListener('click', () => setViewMode('single'));
+document.getElementById('btn-view-envelope').addEventListener('click', () => setViewMode('envelope'));
+
+document.getElementById('btn-add-loadcase').addEventListener('click', () => {
+  const name = prompt('请输入工况名称:', `工况${loadCases.length + 1}`);
+  if (name && name.trim()) {
+    addLoadCase(name.trim());
   }
 });
 
@@ -722,14 +1336,24 @@ document.getElementById('btn-clear').addEventListener('click', () => {
   if (confirm('确定要清空所有内容吗？')) {
     nodes = [];
     members = [];
+    loadCases = [createLoadCase('默认工况')];
+    currentLoadCaseId = loadCases[0].id;
     hasResults = false;
     renderer.hasResults = false;
+    envelopeData = null;
+    renderer.envelopeData = null;
+    viewMode = 'single';
+    renderer.viewMode = 'single';
     clearSelection();
     historyManager.reset();
     historyManager.saveState(nodes, members);
+    updateViewModeButtons();
+    updateLoadCaseList();
     updateButtonStates();
     render();
     updateResultsDisplay();
+    updateEnvelopeDisplay();
+    saveToStorage();
   }
 });
 
@@ -738,12 +1362,18 @@ document.getElementById('btn-undo').addEventListener('click', () => {
   if (prev) {
     nodes = prev.nodes;
     members = prev.members;
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    envelopeData = null;
+    renderer.envelopeData = null;
     clearSelection();
+    updateLoadCaseList();
     updateButtonStates();
     render();
     updateResultsDisplay();
+    updateEnvelopeDisplay();
+    saveToStorage();
   }
 });
 
@@ -752,12 +1382,18 @@ document.getElementById('btn-redo').addEventListener('click', () => {
   if (next) {
     nodes = next.nodes;
     members = next.members;
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    envelopeData = null;
+    renderer.envelopeData = null;
     clearSelection();
+    updateLoadCaseList();
     updateButtonStates();
     render();
     updateResultsDisplay();
+    updateEnvelopeDisplay();
+    saveToStorage();
   }
 });
 

@@ -9,6 +9,9 @@ export class Renderer {
     this.showDeformed = true;
     this.maxForce = 0;
     this.hasResults = false;
+    this.viewMode = 'single';
+    this.envelopeData = null;
+    this.yieldStress = 235e6;
   }
   
   resize() {
@@ -46,22 +49,83 @@ export class Renderer {
     const node2 = nodeMap.get(member.node2Id);
     if (!node1 || !node2) return;
     
-    const color = this.hasResults 
-      ? getForceColor(member.axialForce, this.maxForce)
-      : '#333';
+    let color = '#333';
+    let isOverLimit = false;
+    let envelopeMaxForce = null;
+    let envelopeInfo = null;
+    
+    if (this.viewMode === 'envelope' && this.envelopeData) {
+      envelopeInfo = this.envelopeData.get(member.id);
+      if (envelopeInfo) {
+        envelopeMaxForce = Math.max(Math.abs(envelopeInfo.maxTension), Math.abs(envelopeInfo.maxCompression));
+        color = getForceColor(
+          Math.abs(envelopeInfo.maxTension) >= Math.abs(envelopeInfo.maxCompression) 
+            ? envelopeInfo.maxTension 
+            : envelopeInfo.maxCompression,
+          this.maxForce
+        );
+        const maxStress = Math.max(Math.abs(envelopeInfo.maxTensionStress), Math.abs(envelopeInfo.maxCompressionStress));
+        isOverLimit = maxStress > this.yieldStress;
+      }
+    } else if (this.hasResults) {
+      color = getForceColor(member.axialForce, this.maxForce);
+      isOverLimit = Math.abs(member.stress) > this.yieldStress;
+    }
     
     this.ctx.strokeStyle = color;
     this.ctx.lineWidth = member.selected ? 6 : 4;
     this.ctx.lineCap = 'round';
+    
+    if (isOverLimit) {
+      this.ctx.setLineDash([8, 4]);
+      this.ctx.lineWidth = member.selected ? 8 : 6;
+      this.ctx.strokeStyle = '#ffc107';
+    }
     
     this.ctx.beginPath();
     this.ctx.moveTo(node1.x, node1.y);
     this.ctx.lineTo(node2.x, node2.y);
     this.ctx.stroke();
     
-    if (this.hasResults && this.showDeformed) {
+    this.ctx.setLineDash([]);
+    this.ctx.lineWidth = member.selected ? 6 : 4;
+    
+    if (!isOverLimit || this.viewMode !== 'envelope') {
+      this.ctx.strokeStyle = color;
+      this.ctx.beginPath();
+      this.ctx.moveTo(node1.x, node1.y);
+      this.ctx.lineTo(node2.x, node2.y);
+      this.ctx.stroke();
+    }
+    
+    if (this.viewMode === 'envelope' && envelopeInfo) {
+      this.drawEnvelopeLabels(member, node1, node2, envelopeInfo);
+    }
+    
+    if (this.hasResults && this.showDeformed && this.viewMode === 'single') {
       this.drawDeformedMember(member, node1, node2);
     }
+  }
+  
+  drawEnvelopeLabels(member, node1, node2, envelopeInfo) {
+    const midX = (node1.x + node2.x) / 2;
+    const midY = (node1.y + node2.y) / 2;
+    
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    this.ctx.font = 'bold 11px sans-serif';
+    
+    const tensionText = `${(envelopeInfo.maxTension / 1000).toFixed(2)} kN 拉`;
+    const compressionText = `${(Math.abs(envelopeInfo.maxCompression) / 1000).toFixed(2)} kN 压`;
+    
+    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    this.ctx.fillRect(midX - 50, midY - 20, 100, 36);
+    
+    this.ctx.fillStyle = '#1565c0';
+    this.ctx.fillText(tensionText, midX, midY - 8);
+    
+    this.ctx.fillStyle = '#c62828';
+    this.ctx.fillText(compressionText, midX, midY + 10);
   }
   
   drawDeformedMember(member, node1, node2) {
