@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>结构力学分析器 - 桁架/刚架</title>
-  <script type="module" crossorigin src="/assets/index-Cg_3eubV.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-BNH-6iNw.css">
+  <script type="module" crossorigin src="/assets/index-CodRdwIQ.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-DHNCa83J.css">
 </head>
 <body>
   <div class="app-container">
@@ -17,6 +17,7 @@
         </div>
         <button id="btn-solve" class="btn btn-primary">求解当前工况</button>
         <button id="btn-solve-all" class="btn btn-primary">全部求解</button>
+        <button id="btn-modal" class="btn btn-modal">模态分析</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -36,6 +37,10 @@
         <label>
           位移放大系数:
           <input type="number" id="scale-factor" value="100" min="1" max="1000" step="10" />
+        </label>
+        <label id="modal-scale-label" style="display:none;">
+          振型放大系数:
+          <input type="number" id="modal-scale-factor" value="50" min="1" max="500" step="10" />
         </label>
       </div>
     </div>
@@ -104,6 +109,14 @@
           <span class="legend-circle" style="border: 2px solid #ff9800;"></span>
           <span>铰接释放</span>
         </div>
+        <div class="legend-item">
+          <span class="legend-line" style="border-top: 3px solid #7b1fa2;"></span>
+          <span>振型动画</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-line" style="border-top: 2px dashed rgba(156,39,176,0.4);"></span>
+          <span>振型包络</span>
+        </div>
       </div>
       <div class="panel-section">
         <h3>操作说明</h3>
@@ -121,6 +134,17 @@
       <div class="panel-section" id="results-section">
         <h3>求解结果</h3>
         <div id="results-content">点击"求解"按钮开始计算</div>
+      </div>
+      <div class="panel-section" id="modal-section" style="display:none;">
+        <h3>模态分析结果</h3>
+        <div class="modal-controls">
+          <label>
+            求解阶数:
+            <input type="number" id="modal-num-modes" value="5" min="1" max="20" step="1" />
+          </label>
+        </div>
+        <div id="modal-freq-list" class="modal-freq-list"></div>
+        <button id="btn-modal-close" class="btn btn-small" style="margin-top:8px;">返回静力分析</button>
       </div>
     </div>
   </div>

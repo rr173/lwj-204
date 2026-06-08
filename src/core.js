@@ -35,6 +35,7 @@ export function createMember(node1, node2) {
     release1: false,
     release2: false,
     q: 0,
+    rho: 7850,
     axialForce: 0,
     stress: 0,
     selected: false

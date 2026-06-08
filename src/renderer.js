@@ -16,6 +16,10 @@ export class Renderer {
     this.analysisMode = 'truss';
     this.forceDiagramType = 'moment';
     this.frameResults = null;
+    this.modalMode = false;
+    this.modalModeShape = null;
+    this.modalAmplitude = 0;
+    this.modalEnvelope = null;
   }
 
   resize() {
@@ -627,6 +631,89 @@ export class Renderer {
     this.ctx.setLineDash([]);
   }
 
+  drawModeShapeEnvelope(nodes, members, nodeMap, modeShape, scale) {
+    this.ctx.save();
+    this.ctx.globalAlpha = 0.25;
+    this.ctx.strokeStyle = '#9c27b0';
+    this.ctx.lineWidth = 2;
+    this.ctx.setLineDash([6, 4]);
+
+    for (const sign of [1, -1]) {
+      this.ctx.beginPath();
+      let first = true;
+      for (const member of members) {
+        const n1 = nodeMap.get(member.node1Id);
+        const n2 = nodeMap.get(member.node2Id);
+        if (!n1 || !n2) continue;
+
+        const ms1 = modeShape.find(m => m.nodeId === n1.id);
+        const ms2 = modeShape.find(m => m.nodeId === n2.id);
+        if (!ms1 || !ms2) continue;
+
+        const x1 = n1.x + ms1.dx * scale * sign;
+        const y1 = n1.y + ms1.dy * scale * sign;
+        const x2 = n2.x + ms2.dx * scale * sign;
+        const y2 = n2.y + ms2.dy * scale * sign;
+
+        if (first) {
+          this.ctx.moveTo(x1, y1);
+          first = false;
+        }
+        this.ctx.lineTo(x1, y1);
+        this.ctx.lineTo(x2, y2);
+      }
+      this.ctx.stroke();
+    }
+
+    this.ctx.setLineDash([]);
+    this.ctx.restore();
+  }
+
+  drawModeShapeAnimated(nodes, members, nodeMap, modeShape, amplitude, scale) {
+    this.ctx.save();
+    this.ctx.strokeStyle = '#7b1fa2';
+    this.ctx.lineWidth = 3;
+    this.ctx.lineCap = 'round';
+
+    for (const member of members) {
+      const n1 = nodeMap.get(member.node1Id);
+      const n2 = nodeMap.get(member.node2Id);
+      if (!n1 || !n2) continue;
+
+      const ms1 = modeShape.find(m => m.nodeId === n1.id);
+      const ms2 = modeShape.find(m => m.nodeId === n2.id);
+      if (!ms1 || !ms2) continue;
+
+      const x1 = n1.x + ms1.dx * scale * amplitude;
+      const y1 = n1.y + ms1.dy * scale * amplitude;
+      const x2 = n2.x + ms2.dx * scale * amplitude;
+      const y2 = n2.y + ms2.dy * scale * amplitude;
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(x1, y1);
+      this.ctx.lineTo(x2, y2);
+      this.ctx.stroke();
+    }
+
+    for (const node of nodes) {
+      const ms = modeShape.find(m => m.nodeId === node.id);
+      if (!ms) continue;
+
+      const x = node.x + ms.dx * scale * amplitude;
+      const y = node.y + ms.dy * scale * amplitude;
+
+      this.ctx.fillStyle = '#ce93d8';
+      this.ctx.strokeStyle = '#7b1fa2';
+      this.ctx.lineWidth = 2;
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, 6, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.stroke();
+    }
+
+    this.ctx.restore();
+  }
+
   render(nodes, members, extras = {}) {
     this.clear();
     this.drawGrid();
@@ -645,6 +732,11 @@ export class Renderer {
 
     for (const node of nodes) {
       this.drawNode(node);
+    }
+
+    if (this.modalMode && this.modalModeShape && this.modalEnvelope) {
+      this.drawModeShapeEnvelope(nodes, members, nodeMap, this.modalModeShape, this.modalEnvelope);
+      this.drawModeShapeAnimated(nodes, members, nodeMap, this.modalModeShape, this.modalAmplitude, this.modalEnvelope);
     }
 
     if (extras.selectionBox) {

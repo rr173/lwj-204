@@ -2,6 +2,7 @@ import './style.css';
 import { Renderer } from './src/renderer.js';
 import { createNode, createMember, deepClone } from './src/core.js';
 import { solveTruss, solveFrame } from './src/solver.js';
+import { solveModal } from './src/modal.js';
 import { HistoryManager } from './src/history.js';
 import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases } from './src/presets.js';
 
@@ -24,6 +25,13 @@ let frameResults = null;
 
 let selectedNodes = new Set();
 let selectedMembers = new Set();
+
+let modalActive = false;
+let modalResults = null;
+let currentModalMode = 0;
+let modalAnimFrame = null;
+let modalAnimTime = 0;
+let modalScaleFactor = 50;
 
 let loadCases = [];
 let currentLoadCaseId = null;
@@ -416,6 +424,7 @@ function updateViewModeButtons() {
 
 function setAnalysisMode(mode) {
   if (analysisMode === mode) return;
+  if (modalActive) exitModalMode();
   analysisMode = mode;
   renderer.analysisMode = mode;
 
@@ -461,6 +470,121 @@ function updateForceDiagramButtons() {
   document.getElementById('btn-diagram-moment').classList.toggle('active', forceDiagramType === 'moment');
   document.getElementById('btn-diagram-shear').classList.toggle('active', forceDiagramType === 'shear');
   document.getElementById('btn-diagram-axial').classList.toggle('active', forceDiagramType === 'axial');
+}
+
+function startModalAnalysis() {
+  const numModes = parseInt(document.getElementById('modal-num-modes').value) || 5;
+
+  try {
+    modalResults = solveModal(nodes, members, analysisMode, numModes);
+    modalActive = true;
+    currentModalMode = 0;
+    renderer.modalMode = true;
+
+    document.getElementById('modal-section').style.display = 'block';
+    document.getElementById('modal-scale-label').style.display = 'flex';
+    document.getElementById('results-section').style.display = 'none';
+    document.getElementById('btn-modal').classList.add('active');
+
+    updateModalFreqList();
+    startModalAnimation();
+    updateStatus(`模态分析完成: 求得 ${modalResults.modes.length} 阶模态`);
+  } catch (e) {
+    alert('模态分析失败: ' + e.message);
+    updateStatus('模态分析失败: ' + e.message);
+  }
+}
+
+function exitModalMode() {
+  modalActive = false;
+  renderer.modalMode = false;
+  renderer.modalModeShape = null;
+  renderer.modalAmplitude = 0;
+  renderer.modalEnvelope = null;
+
+  if (modalAnimFrame) {
+    cancelAnimationFrame(modalAnimFrame);
+    modalAnimFrame = null;
+  }
+
+  document.getElementById('modal-section').style.display = 'none';
+  document.getElementById('modal-scale-label').style.display = 'none';
+  document.getElementById('results-section').style.display = 'block';
+  document.getElementById('btn-modal').classList.remove('active');
+
+  render();
+}
+
+function updateModalFreqList() {
+  if (!modalResults || !modalResults.modes.length) return;
+
+  const container = document.getElementById('modal-freq-list');
+  container.innerHTML = '';
+
+  modalResults.modes.forEach((mode, idx) => {
+    const item = document.createElement('div');
+    item.className = 'modal-freq-item';
+    if (idx === currentModalMode) item.classList.add('active');
+
+    const numSpan = document.createElement('span');
+    numSpan.className = 'mode-number';
+    numSpan.textContent = `${mode.modeNumber}`;
+
+    const freqSpan = document.createElement('span');
+    freqSpan.className = 'freq-value';
+    freqSpan.textContent = `${mode.frequency.toFixed(2)} Hz`;
+
+    item.appendChild(numSpan);
+    item.appendChild(freqSpan);
+
+    item.onclick = () => {
+      currentModalMode = idx;
+      updateModalFreqList();
+    };
+
+    container.appendChild(item);
+  });
+}
+
+function startModalAnimation() {
+  if (modalAnimFrame) {
+    cancelAnimationFrame(modalAnimFrame);
+  }
+
+  let lastTime = 0;
+  modalAnimTime = 0;
+
+  function animate(timestamp) {
+    if (!modalActive || !modalResults || !modalResults.modes.length) {
+      modalAnimFrame = null;
+      return;
+    }
+
+    if (lastTime === 0) lastTime = timestamp;
+    const delta = (timestamp - lastTime) / 1000;
+    lastTime = timestamp;
+
+    modalAnimTime += delta;
+
+    const mode = modalResults.modes[currentModalMode];
+    if (!mode) {
+      modalAnimFrame = requestAnimationFrame(animate);
+      return;
+    }
+
+    const visualFreq = 1.5;
+    const amplitude = Math.sin(2 * Math.PI * visualFreq * modalAnimTime);
+
+    renderer.modalModeShape = mode.nodeModeShapes;
+    renderer.modalAmplitude = amplitude;
+    renderer.modalEnvelope = modalScaleFactor;
+
+    render();
+
+    modalAnimFrame = requestAnimationFrame(animate);
+  }
+
+  modalAnimFrame = requestAnimationFrame(animate);
 }
 
 function updateLoadCaseList() {
@@ -583,7 +707,8 @@ function saveToStorage() {
         I: m.I,
         release1: m.release1,
         release2: m.release2,
-        q: m.q
+        q: m.q,
+        rho: m.rho
       })),
       loadCases: loadCases,
       currentLoadCaseId,
@@ -622,6 +747,7 @@ function loadFromStorage() {
       release1: m.release1 || false,
       release2: m.release2 || false,
       q: m.q || 0,
+      rho: m.rho || 7850,
       axialForce: 0,
       stress: 0,
       selected: false
@@ -678,6 +804,12 @@ function init() {
       solveCurrentLoadCase();
     } catch (e) {
       console.warn('初始求解失败:', e.message);
+    }
+
+    try {
+      startModalAnalysis();
+    } catch (e) {
+      console.warn('初始模态分析失败:', e.message);
     }
   } else {
     updateEnvelopeIfNeeded();
@@ -889,6 +1021,7 @@ function showContextMenu(e, target) {
   } else if (target.type === 'member') {
     const member = target.element;
     addMenuItem(menuItems, '设置材料属性...', () => showMemberDialog(member));
+    addMenuItem(menuItems, '设置密度...', () => showDensityDialog(member));
     if (analysisMode === 'frame') {
       addMenuSeparator(menuItems);
       addMenuItem(menuItems, member.release1 ? '1端: 恢复刚接' : '1端: 释放为铰接', () => toggleEndRelease(member, 'release1'));
@@ -1101,12 +1234,20 @@ function showMemberDialog(member) {
     `;
   }
 
+  html += `
+    <div class="form-group">
+      <label>密度 ρ (kg/m³)</label>
+      <input type="number" id="input-rho" value="${member.rho || 7850}" step="10" min="0" />
+    </div>
+  `;
+
   showModal('杆件属性', html, () => {
     member.E = (parseFloat(document.getElementById('input-e').value) || 200) * 1e9;
     member.A = (parseFloat(document.getElementById('input-a').value) || 10) * 1e-4;
     if (analysisMode === 'frame') {
       member.I = (parseFloat(document.getElementById('input-i').value) || 1) * 1e-8;
     }
+    member.rho = parseFloat(document.getElementById('input-rho').value) || 7850;
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
@@ -1149,6 +1290,22 @@ function showUniformLoadDialog(member) {
     render();
     updateResultsDisplay();
     updateEnvelopeDisplay();
+    saveToStorage();
+  });
+}
+
+function showDensityDialog(member) {
+  const html = `
+    <div class="form-group">
+      <label>密度 ρ (kg/m³)</label>
+      <input type="number" id="input-density" value="${member.rho || 7850}" step="10" min="0" />
+    </div>
+    <p style="font-size:12px;color:#666;">钢材默认7850 kg/m³, 修改密度后需重新运行模态分析</p>
+  `;
+
+  showModal('设置密度', html, () => {
+    member.rho = parseFloat(document.getElementById('input-density').value) || 7850;
+    historyManager.saveState(nodes, members);
     saveToStorage();
   });
 }
@@ -1374,6 +1531,7 @@ function exportJSON() {
       release1: m.release1,
       release2: m.release2,
       q: m.q,
+      rho: m.rho,
       axialForce: m.axialForce,
       stress: m.stress
     })),
@@ -1679,6 +1837,26 @@ document.addEventListener('keydown', (e) => {
 document.getElementById('btn-solve').addEventListener('click', solveCurrentLoadCase);
 document.getElementById('btn-solve-all').addEventListener('click', solveAllLoadCases);
 
+document.getElementById('btn-modal').addEventListener('click', () => {
+  if (modalActive) {
+    exitModalMode();
+  } else {
+    startModalAnalysis();
+  }
+});
+
+document.getElementById('btn-modal-close').addEventListener('click', exitModalMode);
+
+document.getElementById('modal-scale-factor').addEventListener('change', (e) => {
+  modalScaleFactor = parseFloat(e.target.value) || 50;
+});
+
+document.getElementById('modal-num-modes').addEventListener('change', () => {
+  if (modalActive) {
+    startModalAnalysis();
+  }
+});
+
 document.getElementById('btn-view-single').addEventListener('click', () => setViewMode('single'));
 document.getElementById('btn-view-envelope').addEventListener('click', () => setViewMode('envelope'));
 
@@ -1698,6 +1876,7 @@ document.getElementById('btn-add-loadcase').addEventListener('click', () => {
 
 document.getElementById('btn-clear').addEventListener('click', () => {
   if (confirm('确定要清空所有内容吗？')) {
+    if (modalActive) exitModalMode();
     nodes = [];
     members = [];
     loadCases = [createLoadCase('默认工况')];
