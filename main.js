@@ -1,9 +1,9 @@
 import './style.css';
 import { Renderer } from './src/renderer.js';
 import { createNode, createMember, deepClone } from './src/core.js';
-import { solveTruss } from './src/solver.js';
+import { solveTruss, solveFrame } from './src/solver.js';
 import { HistoryManager } from './src/history.js';
-import { createWarrenTruss, createDefaultLoadCases } from './src/presets.js';
+import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases } from './src/presets.js';
 
 const canvas = document.getElementById('canvas');
 const renderer = new Renderer(canvas);
@@ -16,6 +16,11 @@ let nodes = [];
 let members = [];
 let hasResults = false;
 let maxForce = 0;
+let maxMoment = 0;
+
+let analysisMode = 'truss';
+let forceDiagramType = 'moment';
+let frameResults = null;
 
 let selectedNodes = new Set();
 let selectedMembers = new Set();
@@ -51,11 +56,23 @@ function applyLoadCaseToNodes(loadCase) {
     if (nodeLoad) {
       node.fx = nodeLoad.fx || 0;
       node.fy = nodeLoad.fy || 0;
+      node.m = nodeLoad.m || 0;
     } else {
       node.fx = 0;
       node.fy = 0;
+      node.m = 0;
     }
   });
+  if (analysisMode === 'frame' && loadCase.memberLoads) {
+    members.forEach(member => {
+      const ml = loadCase.memberLoads[member.id];
+      if (ml) {
+        member.q = ml.q || 0;
+      } else {
+        member.q = 0;
+      }
+    });
+  }
 }
 
 function saveCurrentLoadCaseFromNodes() {
@@ -63,19 +80,33 @@ function saveCurrentLoadCaseFromNodes() {
   if (!lc) return;
   lc.nodeLoads = {};
   nodes.forEach(node => {
-    lc.nodeLoads[node.id] = { fx: node.fx || 0, fy: node.fy || 0 };
+    lc.nodeLoads[node.id] = { fx: node.fx || 0, fy: node.fy || 0, m: node.m || 0 };
   });
+  if (analysisMode === 'frame') {
+    if (!lc.memberLoads) lc.memberLoads = {};
+    members.forEach(member => {
+      lc.memberLoads[member.id] = { q: member.q || 0 };
+    });
+  }
 }
 
 function createLoadCase(name) {
   const id = 'lc_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-  return {
+  const lc = {
     id,
     name,
     nodeLoads: {},
+    memberLoads: {},
     solved: false,
     results: null
   };
+  nodes.forEach(node => {
+    lc.nodeLoads[node.id] = { fx: 0, fy: 0, m: 0 };
+  });
+  members.forEach(member => {
+    lc.memberLoads[member.id] = { q: 0 };
+  });
+  return lc;
 }
 
 function addLoadCase(name) {
@@ -85,6 +116,8 @@ function addLoadCase(name) {
   applyLoadCaseToNodes(lc);
   hasResults = false;
   renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
   updateLoadCaseList();
   saveToStorage();
   render();
@@ -107,6 +140,8 @@ function deleteLoadCase(id) {
     } else {
       hasResults = false;
       renderer.hasResults = false;
+      frameResults = null;
+      renderer.frameResults = null;
     }
   }
   updateLoadCaseList();
@@ -135,6 +170,8 @@ function switchLoadCase(id) {
   } else {
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
   }
   viewMode = 'single';
   renderer.viewMode = 'single';
@@ -151,36 +188,81 @@ function restoreResults(results) {
     if (node) {
       node.dx = rn.dx;
       node.dy = rn.dy;
+      node.dtheta = rn.dtheta || 0;
     }
   });
-  results.members.forEach(rm => {
-    const member = members.find(m => m.id === rm.id);
-    if (member) {
-      member.axialForce = rm.axialForce;
-      member.stress = rm.stress;
-    }
-  });
-  maxForce = results.maxForce;
+  if (analysisMode === 'frame' && results.members && results.members[0] && results.members[0].M1 !== undefined) {
+    results.members.forEach(rm => {
+      const member = members.find(m => m.id === rm.id);
+      if (member) {
+        member.axialForce = rm.axialForce;
+        member.stress = rm.stress;
+      }
+    });
+    frameResults = results;
+    renderer.frameResults = results;
+    maxForce = results.maxForce || 0;
+    maxMoment = results.maxMoment || 0;
+    renderer.maxForce = maxForce;
+    renderer.maxMoment = maxMoment;
+  } else {
+    results.members.forEach(rm => {
+      const member = members.find(m => m.id === rm.id);
+      if (member) {
+        member.axialForce = rm.axialForce;
+        member.stress = rm.stress;
+      }
+    });
+    frameResults = null;
+    renderer.frameResults = null;
+    maxForce = results.maxForce;
+    maxMoment = 0;
+    renderer.maxForce = maxForce;
+    renderer.maxMoment = 0;
+  }
   hasResults = true;
   renderer.hasResults = true;
-  renderer.maxForce = maxForce;
 }
 
 function solveCurrentLoadCase() {
   try {
     saveCurrentLoadCaseFromNodes();
-    const result = solveTruss(nodes, members);
-    maxForce = result.maxForce;
+    let result;
+    if (analysisMode === 'frame') {
+      result = solveFrame(nodes, members);
+      frameResults = result;
+      renderer.frameResults = result;
+      maxForce = result.maxForce;
+      maxMoment = result.maxMoment;
+      renderer.maxForce = maxForce;
+      renderer.maxMoment = maxMoment;
+
+      result.members.forEach(rm => {
+        const member = members.find(m => m.id === rm.id);
+        if (member) {
+          member.axialForce = rm.axialForce;
+          member.stress = rm.stress;
+        }
+      });
+    } else {
+      result = solveTruss(nodes, members);
+      frameResults = null;
+      renderer.frameResults = null;
+      maxForce = result.maxForce;
+      maxMoment = 0;
+      renderer.maxForce = maxForce;
+      renderer.maxMoment = 0;
+    }
+
     hasResults = true;
     renderer.hasResults = true;
-    renderer.maxForce = maxForce;
-    
+
     const lc = getCurrentLoadCase();
     if (lc) {
       lc.solved = true;
       lc.results = deepClone(result);
     }
-    
+
     updateLoadCaseList();
     updateEnvelopeIfNeeded();
     updateResultsDisplay();
@@ -196,14 +278,19 @@ function solveCurrentLoadCase() {
 function solveAllLoadCases() {
   let successCount = 0;
   let failCount = 0;
-  
+
   const originalLoadCaseId = currentLoadCaseId;
-  
+
   for (const lc of loadCases) {
     try {
       currentLoadCaseId = lc.id;
       applyLoadCaseToNodes(lc);
-      const result = solveTruss(nodes, members);
+      let result;
+      if (analysisMode === 'frame') {
+        result = solveFrame(nodes, members);
+      } else {
+        result = solveTruss(nodes, members);
+      }
       lc.solved = true;
       lc.results = deepClone(result);
       successCount++;
@@ -213,14 +300,14 @@ function solveAllLoadCases() {
       failCount++;
     }
   }
-  
+
   currentLoadCaseId = originalLoadCaseId;
   applyLoadCaseToNodes(getCurrentLoadCase());
   const lc = getCurrentLoadCase();
   if (lc.solved && lc.results) {
     restoreResults(lc.results);
   }
-  
+
   updateLoadCaseList();
   updateEnvelopeIfNeeded();
   updateResultsDisplay();
@@ -235,9 +322,9 @@ function calculateEnvelope() {
     envelopeData = null;
     return null;
   }
-  
+
   const envelope = new Map();
-  
+
   members.forEach(member => {
     let maxTension = -Infinity;
     let maxCompression = Infinity;
@@ -245,7 +332,7 @@ function calculateEnvelope() {
     let maxCompressionStress = 0;
     let maxTensionCase = null;
     let maxCompressionCase = null;
-    
+
     solvedCases.forEach(lc => {
       const memberResult = lc.results.members.find(m => m.id === member.id);
       if (memberResult) {
@@ -261,10 +348,10 @@ function calculateEnvelope() {
         }
       }
     });
-    
+
     if (maxTension === -Infinity) maxTension = 0;
     if (maxCompression === Infinity) maxCompression = 0;
-    
+
     envelope.set(member.id, {
       maxTension,
       maxCompression,
@@ -274,7 +361,7 @@ function calculateEnvelope() {
       maxCompressionCase
     });
   });
-  
+
   return envelope;
 }
 
@@ -298,7 +385,7 @@ function updateEnvelopeIfNeeded() {
 function setViewMode(mode) {
   viewMode = mode;
   renderer.viewMode = mode;
-  
+
   if (mode === 'envelope') {
     updateEnvelopeIfNeeded();
     if (envelopeData) {
@@ -315,7 +402,7 @@ function setViewMode(mode) {
       renderer.maxForce = maxForce;
     }
   }
-  
+
   updateViewModeButtons();
   updateEnvelopeDisplay();
   render();
@@ -327,16 +414,65 @@ function updateViewModeButtons() {
   document.getElementById('btn-view-envelope').classList.toggle('active', viewMode === 'envelope');
 }
 
+function setAnalysisMode(mode) {
+  if (analysisMode === mode) return;
+  analysisMode = mode;
+  renderer.analysisMode = mode;
+
+  hasResults = false;
+  renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
+  envelopeData = null;
+  renderer.envelopeData = null;
+
+  loadCases.forEach(lc => {
+    lc.solved = false;
+    lc.results = null;
+  });
+
+  const frameSection = document.getElementById('frame-diagram-section');
+  if (mode === 'frame') {
+    frameSection.style.display = 'block';
+  } else {
+    frameSection.style.display = 'none';
+  }
+
+  updateAnalysisModeButtons();
+  updateLoadCaseList();
+  render();
+  updateResultsDisplay();
+  saveToStorage();
+}
+
+function setForceDiagramType(type) {
+  forceDiagramType = type;
+  renderer.forceDiagramType = type;
+  updateForceDiagramButtons();
+  render();
+}
+
+function updateAnalysisModeButtons() {
+  document.getElementById('btn-mode-truss').classList.toggle('active', analysisMode === 'truss');
+  document.getElementById('btn-mode-frame').classList.toggle('active', analysisMode === 'frame');
+}
+
+function updateForceDiagramButtons() {
+  document.getElementById('btn-diagram-moment').classList.toggle('active', forceDiagramType === 'moment');
+  document.getElementById('btn-diagram-shear').classList.toggle('active', forceDiagramType === 'shear');
+  document.getElementById('btn-diagram-axial').classList.toggle('active', forceDiagramType === 'axial');
+}
+
 function updateLoadCaseList() {
   const container = document.getElementById('loadcase-list');
   container.innerHTML = '';
-  
+
   loadCases.forEach(lc => {
     const item = document.createElement('div');
     item.className = 'loadcase-item';
     if (lc.id === currentLoadCaseId) item.classList.add('active');
     if (lc.solved) item.classList.add('solved');
-    
+
     const nameSpan = document.createElement('span');
     nameSpan.className = 'loadcase-name';
     nameSpan.textContent = lc.name;
@@ -360,7 +496,7 @@ function updateLoadCaseList() {
         }
       };
     };
-    
+
     const deleteBtn = document.createElement('span');
     deleteBtn.className = 'loadcase-delete';
     deleteBtn.textContent = '×';
@@ -371,7 +507,7 @@ function updateLoadCaseList() {
         deleteLoadCase(lc.id);
       }
     };
-    
+
     item.onclick = () => switchLoadCase(lc.id);
     item.appendChild(nameSpan);
     item.appendChild(deleteBtn);
@@ -382,16 +518,16 @@ function updateLoadCaseList() {
 function updateEnvelopeDisplay() {
   const summary = document.getElementById('envelope-summary');
   const overlimitList = document.getElementById('overlimit-list');
-  
+
   if (!envelopeData || viewMode !== 'envelope') {
     summary.innerHTML = '';
     overlimitList.innerHTML = '';
     return;
   }
-  
+
   const solvedCount = loadCases.filter(lc => lc.solved).length;
   summary.innerHTML = `已求解 ${solvedCount} 个工况，共 ${members.length} 根杆件`;
-  
+
   const overlimitMembers = [];
   for (const [memberId, info] of envelopeData.entries()) {
     const member = members.find(m => m.id === memberId);
@@ -406,11 +542,11 @@ function updateEnvelopeDisplay() {
       });
     }
   }
-  
+
   if (overlimitMembers.length > 0) {
     let html = '<h4>⚠ 应力超限杆件</h4>';
     overlimitMembers.forEach(item => {
-      const forceType = Math.abs(item.info.maxTensionStress) >= Math.abs(item.info.maxCompressionStress) 
+      const forceType = Math.abs(item.info.maxTensionStress) >= Math.abs(item.info.maxCompressionStress)
         ? '拉力' : '压力';
       const caseName = Math.abs(item.info.maxTensionStress) >= Math.abs(item.info.maxCompressionStress)
         ? item.info.maxTensionCase : item.info.maxCompressionCase;
@@ -443,10 +579,15 @@ function saveToStorage() {
         length: m.length,
         angle: m.angle,
         E: m.E,
-        A: m.A
+        A: m.A,
+        I: m.I,
+        release1: m.release1,
+        release2: m.release2,
+        q: m.q
       })),
       loadCases: loadCases,
-      currentLoadCaseId
+      currentLoadCaseId,
+      analysisMode
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
@@ -458,38 +599,46 @@ function loadFromStorage() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return false;
-    
+
     const data = JSON.parse(stored);
     if (!data.nodes || !data.members || !data.loadCases || data.loadCases.length === 0) {
       return false;
     }
-    
+
     nodes = data.nodes.map(n => ({
       ...n,
       fx: 0,
       fy: 0,
+      m: 0,
       dx: 0,
       dy: 0,
+      dtheta: 0,
       selected: false
     }));
-    
+
     members = data.members.map(m => ({
       ...m,
+      I: m.I || 1e-5,
+      release1: m.release1 || false,
+      release2: m.release2 || false,
+      q: m.q || 0,
       axialForce: 0,
       stress: 0,
       selected: false
     }));
-    
+
     loadCases = data.loadCases;
     currentLoadCaseId = data.currentLoadCaseId || loadCases[0].id;
-    
+    analysisMode = data.analysisMode || 'truss';
+    renderer.analysisMode = analysisMode;
+
     applyLoadCaseToNodes(getCurrentLoadCase());
-    
+
     const lc = getCurrentLoadCase();
     if (lc.solved && lc.results) {
       restoreResults(lc.results);
     }
-    
+
     return true;
   } catch (e) {
     console.warn('从localStorage加载失败:', e);
@@ -499,32 +648,52 @@ function loadFromStorage() {
 
 function init() {
   renderer.resize();
-  
-  const loaded = loadFromStorage();
-  
+
+  let loaded = false;
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const data = JSON.parse(stored);
+      if (!data.analysisMode) {
+        localStorage.removeItem(STORAGE_KEY);
+      } else {
+        loaded = loadFromStorage();
+      }
+    }
+  } catch (e) {
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
   if (!loaded) {
-    const warren = createWarrenTruss();
-    nodes = warren.nodes;
-    members = warren.members;
-    loadCases = createDefaultLoadCases(nodes);
+    const portal = createPortalFrame();
+    nodes = portal.nodes;
+    members = portal.members;
+    analysisMode = 'frame';
+    renderer.analysisMode = 'frame';
+    loadCases = createFrameLoadCases(nodes, members);
     currentLoadCaseId = loadCases[0].id;
     applyLoadCaseToNodes(getCurrentLoadCase());
-    
+
     try {
-      solveAllLoadCases();
+      solveCurrentLoadCase();
     } catch (e) {
       console.warn('初始求解失败:', e.message);
     }
   } else {
     updateEnvelopeIfNeeded();
   }
-  
+
+  const frameSection = document.getElementById('frame-diagram-section');
+  frameSection.style.display = analysisMode === 'frame' ? 'block' : 'none';
+
   historyManager.saveState(nodes, members);
-  
+
   render();
   updateLoadCaseList();
   updateButtonStates();
   updateResultsDisplay();
+  updateAnalysisModeButtons();
+  updateForceDiagramButtons();
 }
 
 function render() {
@@ -560,7 +729,7 @@ function findMemberAt(x, y, tolerance = 8) {
     const n1 = nodes.find(n => n.id === member.node1Id);
     const n2 = nodes.find(n => n.id === member.node2Id);
     if (!n1 || !n2) continue;
-    
+
     const dist = pointToLineDistance(x, y, n1.x, n1.y, n2.x, n2.y);
     if (dist < tolerance) {
       return member;
@@ -574,15 +743,15 @@ function pointToLineDistance(px, py, x1, y1, x2, y2) {
   const B = py - y1;
   const C = x2 - x1;
   const D = y2 - y1;
-  
+
   const dot = A * C + B * D;
   const lenSq = C * C + D * D;
   let param = -1;
-  
+
   if (lenSq !== 0) param = dot / lenSq;
-  
+
   let xx, yy;
-  
+
   if (param < 0) {
     xx = x1;
     yy = y1;
@@ -593,7 +762,7 @@ function pointToLineDistance(px, py, x1, y1, x2, y2) {
     xx = x1 + param * C;
     yy = y1 + param * D;
   }
-  
+
   const dx = px - xx;
   const dy = py - yy;
   return Math.sqrt(dx * dx + dy * dy);
@@ -611,22 +780,22 @@ function selectInBox(box) {
   const maxX = Math.max(box.startX, box.endX);
   const minY = Math.min(box.startY, box.endY);
   const maxY = Math.max(box.startY, box.endY);
-  
+
   nodes.forEach(node => {
     if (node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY) {
       node.selected = true;
       selectedNodes.add(node.id);
     }
   });
-  
+
   members.forEach(member => {
     const n1 = nodes.find(n => n.id === member.node1Id);
     const n2 = nodes.find(n => n.id === member.node2Id);
     if (!n1 || !n2) return;
-    
+
     const midX = (n1.x + n2.x) / 2;
     const midY = (n1.y + n2.y) / 2;
-    
+
     if (midX >= minX && midX <= maxX && midY >= minY && midY <= maxY) {
       member.selected = true;
       selectedMembers.add(member.id);
@@ -638,7 +807,7 @@ function updateMemberGeometry(member) {
   const n1 = nodes.find(n => n.id === member.node1Id);
   const n2 = nodes.find(n => n.id === member.node2Id);
   if (!n1 || !n2) return;
-  
+
   const dx = n2.x - n1.x;
   const dy = n2.y - n1.y;
   member.length = Math.sqrt(dx * dx + dy * dy);
@@ -647,7 +816,7 @@ function updateMemberGeometry(member) {
 
 function deleteSelected() {
   if (selectedNodes.size === 0 && selectedMembers.size === 0) return;
-  
+
   const memberIdsToDelete = new Set(selectedMembers);
   nodes.forEach(node => {
     if (selectedNodes.has(node.id)) {
@@ -658,27 +827,32 @@ function deleteSelected() {
       });
     }
   });
-  
+
   nodes = nodes.filter(n => !selectedNodes.has(n.id));
   members = members.filter(m => !memberIdsToDelete.has(m.id));
-  
+
   loadCases.forEach(lc => {
     selectedNodes.forEach(nodeId => {
       delete lc.nodeLoads[nodeId];
     });
+    memberIdsToDelete.forEach(memberId => {
+      if (lc.memberLoads) delete lc.memberLoads[memberId];
+    });
     lc.solved = false;
     lc.results = null;
   });
-  
+
   selectedNodes.clear();
   selectedMembers.clear();
-  
+
   hasResults = false;
   renderer.hasResults = false;
-  
+  frameResults = null;
+  renderer.frameResults = null;
+
   envelopeData = null;
   renderer.envelopeData = null;
-  
+
   historyManager.saveState(nodes, members);
   updateLoadCaseList();
   updateButtonStates();
@@ -690,21 +864,24 @@ function deleteSelected() {
 
 function showContextMenu(e, target) {
   e.preventDefault();
-  
+
   contextMenuTarget = target;
-  
+
   const menu = document.getElementById('context-menu');
   const menuItems = menu.querySelector('.menu-items');
   menuItems.innerHTML = '';
-  
+
   const pos = getMousePos(e);
-  
+
   if (target.type === 'node') {
     const node = target.element;
-    
+
     addMenuItem(menuItems, '设置为自由', () => setSupport(node, 'free'));
     addMenuItem(menuItems, '设置为固定铰支座', () => setSupport(node, 'pinned'));
     addMenuItem(menuItems, '设置为滚动支座', () => setSupport(node, 'roller'));
+    if (analysisMode === 'frame') {
+      addMenuItem(menuItems, '设置为固定支座', () => setSupport(node, 'fixed'));
+    }
     addMenuSeparator(menuItems);
     addMenuItem(menuItems, '施加外力...', () => showLoadDialog(node));
     addMenuSeparator(menuItems);
@@ -712,10 +889,17 @@ function showContextMenu(e, target) {
   } else if (target.type === 'member') {
     const member = target.element;
     addMenuItem(menuItems, '设置材料属性...', () => showMemberDialog(member));
+    if (analysisMode === 'frame') {
+      addMenuSeparator(menuItems);
+      addMenuItem(menuItems, member.release1 ? '1端: 恢复刚接' : '1端: 释放为铰接', () => toggleEndRelease(member, 'release1'));
+      addMenuItem(menuItems, member.release2 ? '2端: 恢复刚接' : '2端: 释放为铰接', () => toggleEndRelease(member, 'release2'));
+      addMenuSeparator(menuItems);
+      addMenuItem(menuItems, '设置均布荷载...', () => showUniformLoadDialog(member));
+    }
     addMenuSeparator(menuItems);
     addMenuItem(menuItems, '删除杆件', () => deleteMember(member));
   }
-  
+
   menu.style.left = pos.x + 'px';
   menu.style.top = pos.y + 'px';
   menu.classList.remove('hidden');
@@ -748,6 +932,8 @@ function setSupport(node, type) {
   loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
   hasResults = false;
   renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
   envelopeData = null;
   renderer.envelopeData = null;
   historyManager.saveState(nodes, members);
@@ -759,18 +945,34 @@ function setSupport(node, type) {
   saveToStorage();
 }
 
+function toggleEndRelease(member, releaseProp) {
+  member[releaseProp] = !member[releaseProp];
+  loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
+  hasResults = false;
+  renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
+  envelopeData = null;
+  renderer.envelopeData = null;
+  historyManager.saveState(nodes, members);
+  render();
+  saveToStorage();
+}
+
 function deleteNode(node) {
   nodes = nodes.filter(n => n.id !== node.id);
   members = members.filter(m => m.node1Id !== node.id && m.node2Id !== node.id);
-  
+
   loadCases.forEach(lc => {
     delete lc.nodeLoads[node.id];
     lc.solved = false;
     lc.results = null;
   });
-  
+
   hasResults = false;
   renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
   envelopeData = null;
   renderer.envelopeData = null;
   historyManager.saveState(nodes, members);
@@ -784,14 +986,17 @@ function deleteNode(node) {
 
 function deleteMember(member) {
   members = members.filter(m => m.id !== member.id);
-  
+
   loadCases.forEach(lc => {
+    if (lc.memberLoads) delete lc.memberLoads[member.id];
     lc.solved = false;
     lc.results = null;
   });
-  
+
   hasResults = false;
   renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
   envelopeData = null;
   renderer.envelopeData = null;
   historyManager.saveState(nodes, members);
@@ -808,21 +1013,21 @@ function showModal(title, bodyHtml, onConfirm) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHtml;
   modal.classList.remove('hidden');
-  
+
   const confirmBtn = document.getElementById('modal-confirm');
   const cancelBtn = document.getElementById('modal-cancel');
-  
+
   const cleanup = () => {
     modal.classList.add('hidden');
     confirmBtn.onclick = null;
     cancelBtn.onclick = null;
   };
-  
+
   confirmBtn.onclick = () => {
     onConfirm();
     cleanup();
   };
-  
+
   cancelBtn.onclick = cleanup;
 }
 
@@ -838,17 +1043,27 @@ function showLoadDialog(node) {
         <input type="number" id="input-fy" value="${node.fy || 0}" />
       </div>
     </div>
+    ${analysisMode === 'frame' ? `
+    <div class="form-group">
+      <label>弯矩 M (N·m)</label>
+      <input type="number" id="input-m" value="${node.m || 0}" />
+    </div>` : ''}
     <p style="font-size:12px;color:#666;">正值向右/向上，负值向左/向下</p>
     <p style="font-size:12px;color:#1976d2;margin-top:8px;">当前工况: ${getCurrentLoadCase()?.name || ''}</p>
   `;
-  
+
   showModal('施加外力', html, () => {
     node.fx = parseFloat(document.getElementById('input-fx').value) || 0;
     node.fy = parseFloat(document.getElementById('input-fy').value) || 0;
+    if (analysisMode === 'frame') {
+      node.m = parseFloat(document.getElementById('input-m').value) || 0;
+    }
     saveCurrentLoadCaseFromNodes();
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
     envelopeData = null;
     renderer.envelopeData = null;
     historyManager.saveState(nodes, members);
@@ -864,8 +1079,8 @@ function showLoadDialog(node) {
 function showMemberDialog(member) {
   const eGpa = member.E / 1e9;
   const aCm2 = member.A * 1e4;
-  
-  const html = `
+
+  let html = `
     <div class="form-group">
       <label>弹性模量 E (GPa)</label>
       <input type="number" id="input-e" value="${eGpa}" step="1" min="0" />
@@ -875,13 +1090,57 @@ function showMemberDialog(member) {
       <input type="number" id="input-a" value="${aCm2}" step="0.1" min="0" />
     </div>
   `;
-  
+
+  if (analysisMode === 'frame') {
+    const iCm4 = member.I * 1e8;
+    html += `
+    <div class="form-group">
+      <label>惯性矩 I (cm⁴)</label>
+      <input type="number" id="input-i" value="${iCm4}" step="0.1" min="0" />
+    </div>
+    `;
+  }
+
   showModal('杆件属性', html, () => {
     member.E = (parseFloat(document.getElementById('input-e').value) || 200) * 1e9;
     member.A = (parseFloat(document.getElementById('input-a').value) || 10) * 1e-4;
+    if (analysisMode === 'frame') {
+      member.I = (parseFloat(document.getElementById('input-i').value) || 1) * 1e-8;
+    }
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
+    envelopeData = null;
+    renderer.envelopeData = null;
+    historyManager.saveState(nodes, members);
+    updateLoadCaseList();
+    updateButtonStates();
+    render();
+    updateResultsDisplay();
+    updateEnvelopeDisplay();
+    saveToStorage();
+  });
+}
+
+function showUniformLoadDialog(member) {
+  const html = `
+    <div class="form-group">
+      <label>均布荷载 q (N/m)</label>
+      <input type="number" id="input-q" value="${member.q || 0}" step="100" />
+    </div>
+    <p style="font-size:12px;color:#666;">正值沿杆件局部y轴正方向（垂直于杆件，向"左"侧）</p>
+  `;
+
+  showModal('均布荷载', html, () => {
+    member.q = parseFloat(document.getElementById('input-q').value) || 0;
+    saveCurrentLoadCaseFromNodes();
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
+    hasResults = false;
+    renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
     envelopeData = null;
     renderer.envelopeData = null;
     historyManager.saveState(nodes, members);
@@ -897,19 +1156,65 @@ function showMemberDialog(member) {
 function updateTooltip(e) {
   const tooltip = document.getElementById('tooltip');
   const pos = getMousePos(e);
-  
+
   const member = findMemberAt(pos.x, pos.y);
   hoveredMember = member;
-  
+
   if (member) {
     let html = `<strong>杆件 #${member.id}</strong><br/>`;
-    
-    if (viewMode === 'envelope' && envelopeData) {
+
+    if (analysisMode === 'frame' && hasResults && frameResults) {
+      const mr = frameResults.members.find(m => m.id === member.id);
+      if (mr) {
+        html += `轴力1: ${(mr.N1 / 1000).toFixed(2)} kN<br/>`;
+        html += `剪力1: ${(mr.V1 / 1000).toFixed(2)} kN<br/>`;
+        html += `弯矩1: ${(mr.M1 / 1000).toFixed(2)} kN·m<br/>`;
+        html += `轴力2: ${(mr.N2 / 1000).toFixed(2)} kN<br/>`;
+        html += `剪力2: ${(mr.V2 / 1000).toFixed(2)} kN<br/>`;
+        html += `弯矩2: ${(mr.M2 / 1000).toFixed(2)} kN·m<br/>`;
+        if (member.q) {
+          html += `均布荷载: ${(member.q / 1000).toFixed(1)} kN/m<br/>`;
+        }
+        html += `长度: ${member.length.toFixed(1)} mm<br/>`;
+        if (member.release1) html += `<span style="color:#ff9800;">1端铰接</span><br/>`;
+        if (member.release2) html += `<span style="color:#ff9800;">2端铰接</span><br/>`;
+
+        const n1 = nodes.find(n => n.id === member.node1Id);
+        const n2 = nodes.find(n => n.id === member.node2Id);
+        if (n1 && n2) {
+          const dx = n2.x - n1.x;
+          const dy = n2.y - n1.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0) {
+            const param = pointToLineDistance(pos.x, pos.y, n1.x, n1.y, n2.x, n2.y) > 0 ? -1 : -1;
+            const A = pos.x - n1.x;
+            const B = pos.y - n1.y;
+            const C = n2.x - n1.x;
+            const D = n2.y - n1.y;
+            const dot = A * C + B * D;
+            const lenSq = C * C + D * D;
+            let t = lenSq > 0 ? dot / lenSq : 0;
+            t = Math.max(0, Math.min(1, t));
+
+            const L = member.length * 0.01;
+            const x = t * L;
+            const M_at = mr.M1 * (1 - t) + mr.M2 * t + (member.q || 0) * x * (L - x) / 2;
+            const V_at = mr.V1 - (member.q || 0) * t * L;
+            const N_at = mr.N1 * (1 - t) + mr.N2 * t;
+
+            html += `<br/><strong>位置 t=${(t * 100).toFixed(0)}%:</strong><br/>`;
+            html += `M=${(M_at / 1000).toFixed(2)} kN·m<br/>`;
+            html += `V=${(V_at / 1000).toFixed(2)} kN<br/>`;
+            html += `N=${(N_at / 1000).toFixed(2)} kN`;
+          }
+        }
+      }
+    } else if (viewMode === 'envelope' && envelopeData) {
       const info = envelopeData.get(member.id);
       if (info) {
         const maxStress = Math.max(Math.abs(info.maxTensionStress), Math.abs(info.maxCompressionStress));
         const isOverLimit = maxStress > YIELD_STRESS;
-        
+
         html += `<span style="color:#1565c0;">最大拉力: ${(info.maxTension / 1000).toFixed(2)} kN</span><br/>`;
         html += `<small style="color:#666;">来自工况: ${info.maxTensionCase}</small><br/>`;
         html += `<span style="color:#c62828;">最大压力: ${(Math.abs(info.maxCompression) / 1000).toFixed(2)} kN</span><br/>`;
@@ -925,7 +1230,7 @@ function updateTooltip(e) {
       const force = member.axialForce;
       const stress = member.stress;
       const isYielding = Math.abs(stress) > YIELD_STRESS;
-      
+
       html += `轴力: ${(force / 1000).toFixed(2)} kN (${force > 0 ? '拉力' : force < 0 ? '压力' : '零力'})<br/>`;
       html += `应力: ${(stress / 1e6).toFixed(2)} MPa<br/>`;
       html += `长度: ${member.length.toFixed(1)} mm<br/>`;
@@ -935,9 +1240,12 @@ function updateTooltip(e) {
       }
     } else {
       html += `长度: ${member.length.toFixed(1)} mm<br/>`;
+      if (analysisMode === 'frame' && member.q) {
+        html += `均布荷载: ${(member.q / 1000).toFixed(1)} kN/m<br/>`;
+      }
       html += `<span style="color:#999;">未求解</span>`;
     }
-    
+
     tooltip.innerHTML = html;
     tooltip.style.left = (pos.x + 15) + 'px';
     tooltip.style.top = (pos.y + 15) + 'px';
@@ -949,64 +1257,88 @@ function updateTooltip(e) {
 
 function updateResultsDisplay() {
   const container = document.getElementById('results-content');
-  
+
   if (viewMode === 'envelope') {
     if (!envelopeData) {
       container.innerHTML = '请先对至少一个工况进行求解';
       return;
     }
-    
+
     let html = '';
     html += '<div class="result-item"><strong>包络结果</strong></div>';
     html += `<div class="result-item" style="color:#666;">显示所有工况的极值</div>`;
-    
+
     members.forEach(member => {
       const info = envelopeData.get(member.id);
       if (!info) return;
-      
+
       const maxAbsForce = Math.max(Math.abs(info.maxTension), Math.abs(info.maxCompression));
-      const maxForceType = Math.abs(info.maxTension) >= Math.abs(info.maxCompression) ? '拉' : '压';
-      
+
       html += `<div class="result-item">`;
       html += `杆件 #${member.id}: `;
       html += `拉${(info.maxTension / 1000).toFixed(2)}kN / `;
       html += `压${(Math.abs(info.maxCompression) / 1000).toFixed(2)}kN`;
       html += `</div>`;
     });
-    
+
     container.innerHTML = html;
     return;
   }
-  
+
   if (!hasResults) {
     container.innerHTML = '点击"求解当前工况"按钮开始计算';
     return;
   }
-  
+
   let html = '';
-  
+
   html += '<div class="result-item"><strong>当前工况</strong></div>';
   html += `<div class="result-item" style="color:#1976d2;">${getCurrentLoadCase()?.name || ''}</div>`;
-  
-  html += '<div class="result-item"><strong>节点位移</strong></div>';
-  nodes.forEach(node => {
-    html += `<div class="result-item">`;
-    html += `节点 #${node.id}: `;
-    html += `dx=${(node.dx * 1000).toFixed(4)} mm, `;
-    html += `dy=${(node.dy * 1000).toFixed(4)} mm`;
-    html += `</div>`;
-  });
-  
-  html += '<div class="result-item"><strong>杆件轴力</strong></div>';
-  members.forEach(member => {
-    const force = member.axialForce;
-    html += `<div class="result-item">`;
-    html += `杆件 #${member.id}: `;
-    html += `${(force / 1000).toFixed(2)} kN `;
-    html += `(${force > 0 ? '拉' : force < 0 ? '压' : '零'})`;
-    html += `</div>`;
-  });
-  
+
+  if (analysisMode === 'frame' && frameResults) {
+    html += '<div class="result-item"><strong>节点位移</strong></div>';
+    nodes.forEach(node => {
+      html += `<div class="result-item">`;
+      html += `节点 #${node.id}: `;
+      html += `dx=${(node.dx * 1000).toFixed(4)}mm, `;
+      html += `dy=${(node.dy * 1000).toFixed(4)}mm, `;
+      html += `θ=${((node.dtheta || 0) * 1000).toFixed(4)}mrad`;
+      html += `</div>`;
+    });
+
+    html += '<div class="result-item"><strong>杆端内力</strong></div>';
+    frameResults.members.forEach(mr => {
+      const member = members.find(m => m.id === mr.id);
+      html += `<div class="result-item">`;
+      html += `<strong>杆件 #${mr.id}</strong><br/>`;
+      html += `1端: N=${(mr.N1 / 1000).toFixed(2)}kN, V=${(mr.V1 / 1000).toFixed(2)}kN, M=${(mr.M1 / 1000).toFixed(2)}kN·m<br/>`;
+      html += `2端: N=${(mr.N2 / 1000).toFixed(2)}kN, V=${(mr.V2 / 1000).toFixed(2)}kN, M=${(mr.M2 / 1000).toFixed(2)}kN·m`;
+      if (member && member.q) {
+        html += `<br/>q=${(member.q / 1000).toFixed(1)}kN/m`;
+      }
+      html += `</div>`;
+    });
+  } else {
+    html += '<div class="result-item"><strong>节点位移</strong></div>';
+    nodes.forEach(node => {
+      html += `<div class="result-item">`;
+      html += `节点 #${node.id}: `;
+      html += `dx=${(node.dx * 1000).toFixed(4)} mm, `;
+      html += `dy=${(node.dy * 1000).toFixed(4)} mm`;
+      html += `</div>`;
+    });
+
+    html += '<div class="result-item"><strong>杆件轴力</strong></div>';
+    members.forEach(member => {
+      const force = member.axialForce;
+      html += `<div class="result-item">`;
+      html += `杆件 #${member.id}: `;
+      html += `${(force / 1000).toFixed(2)} kN `;
+      html += `(${force > 0 ? '拉' : force < 0 ? '压' : '零'})`;
+      html += `</div>`;
+    });
+  }
+
   container.innerHTML = html;
 }
 
@@ -1024,8 +1356,10 @@ function exportJSON() {
       support: n.support,
       fx: n.fx,
       fy: n.fy,
+      m: n.m,
       dx: n.dx,
-      dy: n.dy
+      dy: n.dy,
+      dtheta: n.dtheta
     })),
     members: members.map(m => ({
       id: m.id,
@@ -1035,38 +1369,44 @@ function exportJSON() {
       angle: m.angle,
       E: m.E,
       A: m.A,
+      I: m.I,
+      release1: m.release1,
+      release2: m.release2,
+      q: m.q,
       axialForce: m.axialForce,
       stress: m.stress
     })),
     loadCases: loadCases,
     currentLoadCaseId,
+    analysisMode,
     solved: hasResults,
-    maxForce: maxForce
+    maxForce: maxForce,
+    maxMoment: maxMoment
   };
-  
+
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'truss-analysis.json';
+  a.download = `${analysisMode === 'frame' ? 'frame' : 'truss'}-analysis.json`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
 canvas.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
-  
+
   hideContextMenu();
-  
+
   const pos = getMousePos(e);
   mouseState.isDown = true;
   mouseState.startX = pos.x;
   mouseState.startY = pos.y;
   mouseState.hasMoved = false;
-  
+
   const node = findNodeAt(pos.x, pos.y);
   const member = !node ? findMemberAt(pos.x, pos.y) : null;
-  
+
   if (e.shiftKey) {
     mouseState.mode = 'select';
     selectionBox = { startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y };
@@ -1107,43 +1447,45 @@ canvas.addEventListener('mousedown', (e) => {
     clearSelection();
     mouseState.mode = 'createNode';
   }
-  
+
   render();
 });
 
 canvas.addEventListener('mousemove', (e) => {
   const pos = getMousePos(e);
-  
+
   updateTooltip(e);
-  
+
   if (!mouseState.isDown) return;
-  
+
   mouseState.hasMoved = true;
-  
+
   const dx = pos.x - mouseState.startX;
   const dy = pos.y - mouseState.startY;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  
+
   if (mouseState.mode === 'pending' && mouseState.pendingNode && dist > 5) {
     mouseState.mode = 'createMember';
     mouseState.createMemberStart = mouseState.pendingNode;
     mouseState.pendingNode = null;
   }
-  
+
   if (mouseState.mode === 'drag' && mouseState.dragNode) {
     const node = mouseState.dragNode;
     node.x = pos.x;
     node.y = pos.y;
-    
+
     members.forEach(member => {
       if (member.node1Id === node.id || member.node2Id === node.id) {
         updateMemberGeometry(member);
       }
     });
-    
+
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
     envelopeData = null;
     renderer.envelopeData = null;
   } else if (mouseState.mode === 'select') {
@@ -1156,7 +1498,7 @@ canvas.addEventListener('mousemove', (e) => {
       mouseState.createMemberStart = startNode;
     }
   }
-  
+
   if (mouseState.mode === 'createMember' && mouseState.createMemberStart) {
     previewLine = {
       startNode: mouseState.createMemberStart,
@@ -1164,27 +1506,29 @@ canvas.addEventListener('mousemove', (e) => {
       endY: pos.y
     };
   }
-  
+
   render();
 });
 
 canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
-  
+
   const pos = getMousePos(e);
-  
+
   if (mouseState.mode === 'createNode' && !mouseState.hasMoved) {
     const newNode = createNode(pos.x, pos.y);
     nodes.push(newNode);
-    
+
     loadCases.forEach(lc => {
-      lc.nodeLoads[newNode.id] = { fx: 0, fy: 0 };
+      lc.nodeLoads[newNode.id] = { fx: 0, fy: 0, m: 0 };
       lc.solved = false;
       lc.results = null;
     });
-    
+
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
     envelopeData = null;
     renderer.envelopeData = null;
     historyManager.saveState(nodes, members);
@@ -1194,18 +1538,26 @@ canvas.addEventListener('mouseup', (e) => {
   } else if (mouseState.mode === 'createMember' && mouseState.createMemberStart) {
     const endNode = findNodeAt(pos.x, pos.y);
     if (endNode && endNode.id !== mouseState.createMemberStart.id) {
-      const exists = members.some(m => 
+      const exists = members.some(m =>
         (m.node1Id === mouseState.createMemberStart.id && m.node2Id === endNode.id) ||
         (m.node1Id === endNode.id && m.node2Id === mouseState.createMemberStart.id)
       );
-      
+
       if (!exists) {
         const newMember = createMember(mouseState.createMemberStart, endNode);
         members.push(newMember);
-        
-        loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
+
+        loadCases.forEach(lc => {
+          if (!lc.memberLoads) lc.memberLoads = {};
+          lc.memberLoads[newMember.id] = { q: 0 };
+          lc.solved = false;
+          lc.results = null;
+        });
+
         hasResults = false;
         renderer.hasResults = false;
+        frameResults = null;
+        renderer.frameResults = null;
         envelopeData = null;
         renderer.envelopeData = null;
         historyManager.saveState(nodes, members);
@@ -1224,7 +1576,7 @@ canvas.addEventListener('mouseup', (e) => {
     updateEnvelopeDisplay();
     saveToStorage();
   }
-  
+
   mouseState.isDown = false;
   mouseState.mode = null;
   mouseState.dragNode = null;
@@ -1232,7 +1584,7 @@ canvas.addEventListener('mouseup', (e) => {
   mouseState.pendingNode = null;
   selectionBox = null;
   previewLine = null;
-  
+
   render();
   updateResultsDisplay();
   updateEnvelopeDisplay();
@@ -1242,7 +1594,7 @@ canvas.addEventListener('contextmenu', (e) => {
   const pos = getMousePos(e);
   const node = findNodeAt(pos.x, pos.y);
   const member = !node ? findMemberAt(pos.x, pos.y) : null;
-  
+
   if (node) {
     showContextMenu(e, { type: 'node', element: node });
   } else if (member) {
@@ -1254,7 +1606,7 @@ canvas.addEventListener('dblclick', (e) => {
   const pos = getMousePos(e);
   const node = findNodeAt(pos.x, pos.y);
   const member = !node ? findMemberAt(pos.x, pos.y) : null;
-  
+
   if (node) {
     showLoadDialog(node);
   } else if (member) {
@@ -1278,6 +1630,8 @@ document.addEventListener('keydown', (e) => {
       loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
       hasResults = false;
       renderer.hasResults = false;
+      frameResults = null;
+      renderer.frameResults = null;
       envelopeData = null;
       renderer.envelopeData = null;
       clearSelection();
@@ -1297,6 +1651,8 @@ document.addEventListener('keydown', (e) => {
       loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
       hasResults = false;
       renderer.hasResults = false;
+      frameResults = null;
+      renderer.frameResults = null;
       envelopeData = null;
       renderer.envelopeData = null;
       clearSelection();
@@ -1325,6 +1681,13 @@ document.getElementById('btn-solve-all').addEventListener('click', solveAllLoadC
 document.getElementById('btn-view-single').addEventListener('click', () => setViewMode('single'));
 document.getElementById('btn-view-envelope').addEventListener('click', () => setViewMode('envelope'));
 
+document.getElementById('btn-mode-truss').addEventListener('click', () => setAnalysisMode('truss'));
+document.getElementById('btn-mode-frame').addEventListener('click', () => setAnalysisMode('frame'));
+
+document.getElementById('btn-diagram-moment').addEventListener('click', () => setForceDiagramType('moment'));
+document.getElementById('btn-diagram-shear').addEventListener('click', () => setForceDiagramType('shear'));
+document.getElementById('btn-diagram-axial').addEventListener('click', () => setForceDiagramType('axial'));
+
 document.getElementById('btn-add-loadcase').addEventListener('click', () => {
   const name = prompt('请输入工况名称:', `工况${loadCases.length + 1}`);
   if (name && name.trim()) {
@@ -1340,6 +1703,8 @@ document.getElementById('btn-clear').addEventListener('click', () => {
     currentLoadCaseId = loadCases[0].id;
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
     envelopeData = null;
     renderer.envelopeData = null;
     viewMode = 'single';
@@ -1365,6 +1730,8 @@ document.getElementById('btn-undo').addEventListener('click', () => {
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
     envelopeData = null;
     renderer.envelopeData = null;
     clearSelection();
@@ -1385,6 +1752,8 @@ document.getElementById('btn-redo').addEventListener('click', () => {
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
     envelopeData = null;
     renderer.envelopeData = null;
     clearSelection();

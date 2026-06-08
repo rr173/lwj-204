@@ -3,7 +3,12 @@ import {
   createTransformationMatrix,
   multiplyMatrices,
   transposeMatrix,
-  gaussElimination
+  gaussElimination,
+  createBeamLocalStiffnessMatrix,
+  createBeamTransformationMatrix,
+  createUniformLoadEquivalentForces,
+  multiplyMatrixVector,
+  applyEndReleases
 } from './core.js';
 
 const PIXEL_TO_METER = 0.01;
@@ -150,5 +155,213 @@ export function solveTruss(nodes, members) {
       stress: m.stress
     })),
     maxForce
+  };
+}
+
+export function solveFrame(nodes, members) {
+  const nodeMap = new Map();
+  nodes.forEach((node, index) => {
+    nodeMap.set(node.id, { ...node, index });
+  });
+
+  const numDOF = nodes.length * 3;
+
+  const K = Array(numDOF).fill(null).map(() => Array(numDOF).fill(0));
+
+  const F = Array(numDOF).fill(0);
+
+  for (const member of members) {
+    const node1 = nodeMap.get(member.node1Id);
+    const node2 = nodeMap.get(member.node2Id);
+    if (!node1 || !node2) continue;
+
+    const lengthInMeters = member.length * PIXEL_TO_METER;
+    const L = lengthInMeters;
+
+    let kLocal = createBeamLocalStiffnessMatrix(member.E, member.A, member.I, L);
+    kLocal = applyEndReleases(kLocal, member.release1, member.release2);
+
+    const T = createBeamTransformationMatrix(member.angle);
+    const Tt = transposeMatrix(T);
+    const kGlobal = multiplyMatrices(multiplyMatrices(Tt, kLocal), T);
+
+    const dof1 = node1.index * 3;
+    const dof2 = node2.index * 3;
+    const dofIndices = [dof1, dof1 + 1, dof1 + 2, dof2, dof2 + 1, dof2 + 2];
+
+    for (let i = 0; i < 6; i++) {
+      for (let j = 0; j < 6; j++) {
+        K[dofIndices[i]][dofIndices[j]] += kGlobal[i][j];
+      }
+    }
+
+    if (member.q !== 0) {
+      const qLocal = createUniformLoadEquivalentForces(member.q, L);
+      const qGlobal = multiplyMatrixVector(Tt, qLocal);
+      for (let i = 0; i < 6; i++) {
+        F[dofIndices[i]] += qGlobal[i];
+      }
+    }
+  }
+
+  for (const node of nodes) {
+    const idx = nodeMap.get(node.id).index;
+    const dofX = idx * 3;
+    const dofY = idx * 3 + 1;
+    const dofT = idx * 3 + 2;
+    F[dofX] += node.fx || 0;
+    F[dofY] += node.fy || 0;
+    F[dofT] += node.m || 0;
+  }
+
+  const constrainedDOFs = [];
+  const freeDOFs = [];
+
+  for (const node of nodes) {
+    const idx = nodeMap.get(node.id).index;
+    const dofX = idx * 3;
+    const dofY = idx * 3 + 1;
+    const dofT = idx * 3 + 2;
+
+    if (node.support === 'fixed') {
+      constrainedDOFs.push(dofX, dofY, dofT);
+    } else if (node.support === 'pinned') {
+      constrainedDOFs.push(dofX, dofY);
+      freeDOFs.push(dofT);
+    } else if (node.support === 'roller') {
+      constrainedDOFs.push(dofY);
+      freeDOFs.push(dofX, dofT);
+    } else {
+      freeDOFs.push(dofX, dofY, dofT);
+    }
+  }
+
+  if (freeDOFs.length === 0) {
+    throw new Error('结构无自由度，无法求解');
+  }
+
+  const numFree = freeDOFs.length;
+  const Kff = Array(numFree).fill(null).map(() => Array(numFree).fill(0));
+  const Ff = Array(numFree).fill(0);
+
+  for (let i = 0; i < numFree; i++) {
+    Ff[i] = F[freeDOFs[i]];
+    for (let j = 0; j < numFree; j++) {
+      Kff[i][j] = K[freeDOFs[i]][freeDOFs[j]];
+    }
+  }
+
+  let displacementFree;
+  try {
+    displacementFree = gaussElimination(Kff, Ff);
+  } catch (e) {
+    throw new Error('求解失败：' + e.message);
+  }
+
+  const displacement = Array(numDOF).fill(0);
+  for (let i = 0; i < numFree; i++) {
+    displacement[freeDOFs[i]] = displacementFree[i];
+  }
+
+  for (const node of nodes) {
+    const idx = nodeMap.get(node.id).index;
+    node.dx = displacement[idx * 3];
+    node.dy = displacement[idx * 3 + 1];
+    node.dtheta = displacement[idx * 3 + 2];
+  }
+
+  let maxForce = 0;
+  let maxMoment = 0;
+
+  const memberResults = [];
+
+  for (const member of members) {
+    const node1 = nodeMap.get(member.node1Id);
+    const node2 = nodeMap.get(member.node2Id);
+    if (!node1 || !node2) {
+      memberResults.push({
+        id: member.id,
+        axialForce: 0,
+        stress: 0,
+        N1: 0, V1: 0, M1: 0,
+        N2: 0, V2: 0, M2: 0,
+        q: member.q
+      });
+      continue;
+    }
+
+    const idx1 = node1.index;
+    const idx2 = node2.index;
+    const d = [
+      displacement[idx1 * 3],
+      displacement[idx1 * 3 + 1],
+      displacement[idx1 * 3 + 2],
+      displacement[idx2 * 3],
+      displacement[idx2 * 3 + 1],
+      displacement[idx2 * 3 + 2]
+    ];
+
+    const lengthInMeters = member.length * PIXEL_TO_METER;
+    const L = lengthInMeters;
+
+    const T = createBeamTransformationMatrix(member.angle);
+    const dLocal = multiplyMatrixVector(transposeMatrix(T), d);
+
+    let kLocal = createBeamLocalStiffnessMatrix(member.E, member.A, member.I, L);
+    const fLocal = multiplyMatrixVector(kLocal, dLocal);
+
+    let N1 = fLocal[0];
+    let V1 = fLocal[1];
+    let M1 = fLocal[2];
+    let N2 = fLocal[3];
+    let V2 = fLocal[4];
+    let M2 = fLocal[5];
+
+    if (member.q !== 0) {
+      const qF = createUniformLoadEquivalentForces(member.q, L);
+      N1 -= qF[0];
+      V1 -= qF[1];
+      M1 -= qF[2];
+      N2 -= qF[3];
+      V2 -= qF[4];
+      M2 -= qF[5];
+    }
+
+    if (member.release1) {
+      M1 = 0;
+    }
+    if (member.release2) {
+      M2 = 0;
+    }
+
+    const axialForce = (N1 + N2) / 2;
+
+    member.axialForce = axialForce;
+    member.stress = axialForce / member.A;
+
+    maxForce = Math.max(maxForce, Math.abs(N1), Math.abs(N2), Math.abs(V1), Math.abs(V2));
+    maxMoment = Math.max(maxMoment, Math.abs(M1), Math.abs(M2));
+
+    memberResults.push({
+      id: member.id,
+      axialForce: member.axialForce,
+      stress: member.stress,
+      N1, V1, M1,
+      N2, V2, M2,
+      q: member.q
+    });
+  }
+
+  return {
+    nodes: nodes.map(n => ({
+      id: n.id,
+      dx: n.dx,
+      dy: n.dy,
+      dtheta: n.dtheta,
+      reaction: null
+    })),
+    members: memberResults,
+    maxForce,
+    maxMoment
   };
 }

@@ -469,3 +469,66 @@ body {
   color: #e65100;
   margin-bottom: 8px;
 }
+
+.mode-group {
+  display: flex;
+  gap: 0;
+  margin-right: 10px;
+}
+
+.mode-group .btn {
+  border-radius: 0;
+  border-right: none;
+  font-weight: 600;
+}
+
+.mode-group .btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.mode-group .btn:last-child {
+  border-radius: 0 4px 4px 0;
+  border-right: 1px solid #ccc;
+}
+
+.mode-group .btn.active {
+  background: #ff6f00;
+  color: #fff;
+  border-color: #ff6f00;
+}
+
+.diagram-group {
+  display: flex;
+  gap: 0;
+  margin-right: 10px;
+}
+
+.diagram-group .btn {
+  border-radius: 0;
+  border-right: none;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.diagram-group .btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.diagram-group .btn:last-child {
+  border-radius: 0 4px 4px 0;
+  border-right: 1px solid #ccc;
+}
+
+.diagram-group .btn.active {
+  background: #4caf50;
+  color: #fff;
+  border-color: #4caf50;
+}
+
+.legend-circle {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
