@@ -20,6 +20,11 @@ export class Renderer {
     this.modalModeShape = null;
     this.modalAmplitude = 0;
     this.modalEnvelope = null;
+    this.influenceActive = false;
+    this.influenceSectionMemberId = null;
+    this.influenceSectionT = 0.5;
+    this.influenceForcePosition = null;
+    this.influenceResponseValue = null;
   }
 
   resize() {
@@ -714,9 +719,127 @@ export class Renderer {
     this.ctx.restore();
   }
 
+  drawInfluenceSectionMarker(nodeMap) {
+    if (!this.influenceActive || !this.influenceSectionMemberId) return;
+
+    const allMembers = this._membersRef;
+    if (!allMembers) return;
+    const mem = allMembers.find(m => m.id === this.influenceSectionMemberId);
+    if (!mem) return;
+
+    const node1 = nodeMap.get(mem.node1Id);
+    const node2 = nodeMap.get(mem.node2Id);
+    if (!node1 || !node2) return;
+
+    const t = this.influenceSectionT;
+    const sx = node1.x + (node2.x - node1.x) * t;
+    const sy = node1.y + (node2.y - node1.y) * t;
+
+    const dx = node2.x - node1.x;
+    const dy = node2.y - node1.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 1) return;
+
+    const nx = -dy / len;
+    const ny = dx / len;
+    const triSize = 10;
+
+    this.ctx.fillStyle = '#00695c';
+    this.ctx.strokeStyle = '#004d40';
+    this.ctx.lineWidth = 2;
+
+    this.ctx.beginPath();
+    this.ctx.moveTo(sx + nx * triSize, sy + ny * triSize);
+    this.ctx.lineTo(sx - nx * triSize * 0.5 + dx / len * triSize * 0.5, sy - ny * triSize * 0.5 + dy / len * triSize * 0.5);
+    this.ctx.lineTo(sx - nx * triSize * 0.5 - dx / len * triSize * 0.5, sy - ny * triSize * 0.5 - dy / len * triSize * 0.5);
+    this.ctx.closePath();
+    this.ctx.fill();
+    this.ctx.stroke();
+  }
+
+  drawInfluenceForceArrow(nodeMap) {
+    if (!this.influenceActive || !this.influenceForcePosition) return;
+
+    const px = this.influenceForcePosition.x;
+    let py = this.influenceForcePosition.y;
+
+    const allMembers = this._membersRef;
+    if (allMembers) {
+      let bestY = null;
+      for (const mem of allMembers) {
+        const n1 = nodeMap.get(mem.node1Id);
+        const n2 = nodeMap.get(mem.node2Id);
+        if (!n1 || !n2) continue;
+        const minX = Math.min(n1.x, n2.x);
+        const maxX = Math.max(n1.x, n2.x);
+        if (px >= minX - 1 && px <= maxX + 1) {
+          const dx = n2.x - n1.x;
+          const dy = n2.y - n1.y;
+          const lenSq = dx * dx + dy * dy;
+          if (lenSq < 1) continue;
+          let t = ((px - n1.x) * dx) / lenSq;
+          t = Math.max(0, Math.min(1, t));
+          const yAt = n1.y + dy * t;
+          if (bestY === null || yAt < bestY) bestY = yAt;
+        }
+      }
+      if (bestY !== null) py = bestY;
+    }
+
+    const arrowStartY = py - 50;
+    const arrowEndY = py - 5;
+
+    this.ctx.strokeStyle = '#d32f2f';
+    this.ctx.fillStyle = '#d32f2f';
+    this.ctx.lineWidth = 3;
+
+    this.ctx.beginPath();
+    this.ctx.moveTo(px, arrowStartY);
+    this.ctx.lineTo(px, arrowEndY);
+    this.ctx.stroke();
+
+    const headLen = 10;
+    this.ctx.beginPath();
+    this.ctx.moveTo(px, arrowEndY);
+    this.ctx.lineTo(px - headLen * 0.5, arrowEndY - headLen);
+    this.ctx.lineTo(px + headLen * 0.5, arrowEndY - headLen);
+    this.ctx.closePath();
+    this.ctx.fill();
+
+    this.ctx.font = 'bold 11px sans-serif';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillStyle = '#d32f2f';
+    this.ctx.fillText('1 kN', px, arrowStartY - 6);
+
+    if (this.influenceResponseValue != null && this.influenceSectionMemberId) {
+      if (!allMembers) return;
+      const mem = allMembers.find(m => m.id === this.influenceSectionMemberId);
+      if (!mem) return;
+      const node1 = nodeMap.get(mem.node1Id);
+      const node2 = nodeMap.get(mem.node2Id);
+      if (!node1 || !node2) return;
+
+      const t = this.influenceSectionT;
+      const sx = node1.x + (node2.x - node1.x) * t;
+      const sy = node1.y + (node2.y - node1.y) * t;
+
+      const val = this.influenceResponseValue;
+      const unit = this.analysisMode === 'truss' ? 'kN'
+        : (this._influenceResponseType === 'moment' ? 'kN·m' : 'kN');
+      const valText = `${(val / 1000).toFixed(3)} ${unit}`;
+
+      this.ctx.font = 'bold 12px sans-serif';
+      this.ctx.textAlign = 'center';
+      this.ctx.fillStyle = '#004d40';
+      this.ctx.fillText(valText, sx, sy - 20);
+    }
+  }
+
   render(nodes, members, extras = {}) {
     this.clear();
     this.drawGrid();
+
+    this._membersRef = members;
 
     const nodeMap = new Map();
     nodes.forEach(n => nodeMap.set(n.id, n));
@@ -749,6 +872,11 @@ export class Renderer {
         extras.previewLine.endX,
         extras.previewLine.endY
       );
+    }
+
+    if (this.influenceActive) {
+      this.drawInfluenceSectionMarker(nodeMap);
+      this.drawInfluenceForceArrow(nodeMap);
     }
   }
 }

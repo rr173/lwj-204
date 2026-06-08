@@ -80,6 +80,22 @@ body {
   border-color: #4a148c;
 }
 
+.btn-influence {
+  background: #00695c;
+  color: #fff;
+  border-color: #00695c;
+}
+
+.btn-influence:hover {
+  background: #004d40;
+  border-color: #004d40;
+}
+
+.btn-influence.active {
+  background: #00251a;
+  border-color: #00251a;
+}
+
 .toolbar-right label {
   font-size: 14px;
   display: flex;
@@ -819,4 +835,64 @@ body {
   .report-page:last-child {
     page-break-after: auto;
   }
+}
+
+.influence-panel {
+  height: 220px;
+  background: #fff;
+  border-top: 2px solid #00695c;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.influence-panel.hidden {
+  display: none;
+}
+
+.influence-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 16px;
+  background: #e0f2f1;
+  border-bottom: 1px solid #b2dfdb;
+  flex-shrink: 0;
+}
+
+.influence-panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #00695c;
+  white-space: nowrap;
+}
+
+.influence-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.influence-panel-controls label {
+  font-size: 12px;
+  color: #555;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.influence-panel-controls select {
+  padding: 3px 6px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+#influence-canvas {
+  flex: 1;
+  display: block;
+  background: #fafafa;
+  cursor: crosshair;
 }

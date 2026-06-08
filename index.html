@@ -17,6 +17,7 @@
         <button id="btn-solve" class="btn btn-primary">求解当前工况</button>
         <button id="btn-solve-all" class="btn btn-primary">全部求解</button>
         <button id="btn-modal" class="btn btn-modal">模态分析</button>
+        <button id="btn-influence" class="btn btn-influence">影响线</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -51,6 +52,25 @@
       </div>
       <div id="tooltip" class="tooltip hidden"></div>
       <div id="status-bar" class="status-bar"></div>
+    </div>
+
+    <div id="influence-panel" class="influence-panel hidden">
+      <div class="influence-panel-header">
+        <span class="influence-panel-title">影响线分析</span>
+        <div class="influence-panel-controls">
+          <label>观测截面: <span id="influence-section-label">未选择</span></label>
+          <label>响应量:
+            <select id="influence-response-type">
+              <option value="axial">轴力</option>
+              <option value="shear">剪力</option>
+              <option value="moment">弯矩</option>
+            </select>
+          </label>
+          <button id="btn-influence-calc" class="btn btn-small btn-primary" disabled>计算</button>
+          <button id="btn-influence-exit" class="btn btn-small">退出影响线</button>
+        </div>
+      </div>
+      <canvas id="influence-canvas"></canvas>
     </div>
     
     <div class="info-panel">

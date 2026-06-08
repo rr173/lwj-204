@@ -33,6 +33,16 @@ let modalAnimFrame = null;
 let modalAnimTime = 0;
 let modalScaleFactor = 50;
 
+let influenceActive = false;
+let influenceStep = 'idle';
+let influenceSectionMemberId = null;
+let influenceSectionT = 0.5;
+let influenceSectionX = 0;
+let influenceSectionY = 0;
+let influenceResponseType = 'axial';
+let influenceData = null;
+let influenceHoverIdx = -1;
+
 let loadCases = [];
 let currentLoadCaseId = null;
 let viewMode = 'single';
@@ -425,6 +435,7 @@ function updateViewModeButtons() {
 function setAnalysisMode(mode) {
   if (analysisMode === mode) return;
   if (modalActive) exitModalMode();
+  if (influenceActive) exitInfluenceMode();
   analysisMode = mode;
   renderer.analysisMode = mode;
 
@@ -473,6 +484,7 @@ function updateForceDiagramButtons() {
 }
 
 function startModalAnalysis() {
+  if (influenceActive) exitInfluenceMode();
   const numModes = parseInt(document.getElementById('modal-num-modes').value) || 5;
 
   try {
@@ -1558,6 +1570,17 @@ canvas.addEventListener('mousedown', (e) => {
   hideContextMenu();
 
   const pos = getMousePos(e);
+
+  if (influenceActive && influenceStep === 'selectSection') {
+    const member = findMemberAt(pos.x, pos.y);
+    if (member) {
+      selectInfluenceSection(member, pos.x, pos.y);
+      return;
+    }
+  }
+
+  if (influenceActive) return;
+
   mouseState.isDown = true;
   mouseState.startX = pos.x;
   mouseState.startY = pos.y;
@@ -1613,7 +1636,11 @@ canvas.addEventListener('mousedown', (e) => {
 canvas.addEventListener('mousemove', (e) => {
   const pos = getMousePos(e);
 
-  updateTooltip(e);
+  if (!influenceActive) {
+    updateTooltip(e);
+  }
+
+  if (influenceActive) return;
 
   if (!mouseState.isDown) return;
 
@@ -1671,6 +1698,8 @@ canvas.addEventListener('mousemove', (e) => {
 
 canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
+
+  if (influenceActive) return;
 
   const pos = getMousePos(e);
 
@@ -1750,6 +1779,7 @@ canvas.addEventListener('mouseup', (e) => {
 });
 
 canvas.addEventListener('contextmenu', (e) => {
+  if (influenceActive) { e.preventDefault(); return; }
   const pos = getMousePos(e);
   const node = findNodeAt(pos.x, pos.y);
   const member = !node ? findMemberAt(pos.x, pos.y) : null;
@@ -1762,6 +1792,7 @@ canvas.addEventListener('contextmenu', (e) => {
 });
 
 canvas.addEventListener('dblclick', (e) => {
+  if (influenceActive) return;
   const pos = getMousePos(e);
   const node = findNodeAt(pos.x, pos.y);
   const member = !node ? findMemberAt(pos.x, pos.y) : null;
@@ -1847,6 +1878,84 @@ document.getElementById('btn-modal').addEventListener('click', () => {
 
 document.getElementById('btn-modal-close').addEventListener('click', exitModalMode);
 
+document.getElementById('btn-influence').addEventListener('click', () => {
+  if (influenceActive) {
+    exitInfluenceMode();
+  } else {
+    enterInfluenceMode();
+  }
+});
+
+document.getElementById('btn-influence-exit').addEventListener('click', exitInfluenceMode);
+
+document.getElementById('btn-influence-calc').addEventListener('click', () => {
+  influenceResponseType = document.getElementById('influence-response-type').value;
+  computeInfluenceLine();
+});
+
+document.getElementById('influence-response-type').addEventListener('change', (e) => {
+  influenceResponseType = e.target.value;
+});
+
+const influenceCanvas = document.getElementById('influence-canvas');
+influenceCanvas.addEventListener('mousemove', (e) => {
+  if (!influenceData || !influenceData.points.length) return;
+
+  const rect = influenceCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const W = influenceCanvas.width;
+  const H = influenceCanvas.height;
+  const margin = { left: 60, right: 30, top: 20, bottom: 30 };
+  const plotW = W - margin.left - margin.right;
+
+  const pts = influenceData.points;
+  const minX = pts[0].x;
+  const maxX = pts[pts.length - 1].x;
+  const rangeX = maxX - minX || 1;
+
+  if (mx < margin.left || mx > W - margin.right) {
+    if (influenceHoverIdx !== -1) {
+      influenceHoverIdx = -1;
+      renderer.influenceForcePosition = null;
+      renderer.influenceResponseValue = null;
+      drawInfluenceLine();
+      render();
+    }
+    return;
+  }
+
+  const dataX = minX + ((mx - margin.left) / plotW) * rangeX;
+  let closestIdx = 0;
+  let closestDist = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const d = Math.abs(pts[i].x - dataX);
+    if (d < closestDist) {
+      closestDist = d;
+      closestIdx = i;
+    }
+  }
+
+  if (closestIdx !== influenceHoverIdx) {
+    influenceHoverIdx = closestIdx;
+    renderer.influenceForcePosition = { x: pts[closestIdx].x, y: 0 };
+    renderer.influenceResponseValue = pts[closestIdx].value;
+    drawInfluenceLine();
+    render();
+  }
+});
+
+influenceCanvas.addEventListener('mouseleave', () => {
+  if (influenceHoverIdx !== -1) {
+    influenceHoverIdx = -1;
+    renderer.influenceForcePosition = null;
+    renderer.influenceResponseValue = null;
+    drawInfluenceLine();
+    render();
+  }
+});
+
 document.getElementById('modal-scale-factor').addEventListener('change', (e) => {
   modalScaleFactor = parseFloat(e.target.value) || 50;
 });
@@ -1877,6 +1986,7 @@ document.getElementById('btn-add-loadcase').addEventListener('click', () => {
 document.getElementById('btn-clear').addEventListener('click', () => {
   if (confirm('确定要清空所有内容吗？')) {
     if (modalActive) exitModalMode();
+    if (influenceActive) exitInfluenceMode();
     nodes = [];
     members = [];
     loadCases = [createLoadCase('默认工况')];
@@ -1965,6 +2075,10 @@ document.getElementById('scale-factor').addEventListener('change', (e) => {
 
 window.addEventListener('resize', () => {
   renderer.resize();
+  if (influenceActive) {
+    resizeInfluenceCanvas();
+    if (influenceData) drawInfluenceLine();
+  }
   render();
 });
 
@@ -1974,6 +2088,401 @@ function updateStatus(text) {
   setTimeout(() => {
     status.textContent = '';
   }, 3000);
+}
+
+function enterInfluenceMode() {
+  if (modalActive) exitModalMode();
+  if (!loadCases.some(lc => lc.solved)) {
+    alert('请先至少求解一个工况后再进入影响线模式');
+    return;
+  }
+  influenceActive = true;
+  influenceStep = 'selectSection';
+  influenceSectionMemberId = null;
+  influenceData = null;
+  influenceHoverIdx = -1;
+  renderer.influenceActive = true;
+  renderer.influenceSectionMemberId = null;
+  renderer.influenceSectionT = 0.5;
+  renderer.influenceForcePosition = null;
+  renderer.influenceResponseValue = null;
+
+  document.getElementById('influence-panel').classList.remove('hidden');
+  document.getElementById('btn-influence').classList.add('active');
+  document.getElementById('influence-section-label').textContent = '点击杆件选择';
+  document.getElementById('btn-influence-calc').disabled = true;
+
+  const selectEl = document.getElementById('influence-response-type');
+  selectEl.innerHTML = '';
+  if (analysisMode === 'truss') {
+    const opt = document.createElement('option');
+    opt.value = 'axial';
+    opt.textContent = '轴力';
+    selectEl.appendChild(opt);
+    influenceResponseType = 'axial';
+  } else {
+    const optA = document.createElement('option');
+    optA.value = 'axial';
+    optA.textContent = '轴力';
+    selectEl.appendChild(optA);
+    const optS = document.createElement('option');
+    optS.value = 'shear';
+    optS.textContent = '剪力';
+    selectEl.appendChild(optS);
+    const optM = document.createElement('option');
+    optM.value = 'moment';
+    optM.textContent = '弯矩';
+    selectEl.appendChild(optM);
+    influenceResponseType = 'moment';
+  }
+
+  resizeInfluenceCanvas();
+  updateStatus('影响线模式: 请点击一根杆件选择观测截面');
+  render();
+}
+
+function exitInfluenceMode() {
+  influenceActive = false;
+  influenceStep = 'idle';
+  influenceSectionMemberId = null;
+  influenceData = null;
+  influenceHoverIdx = -1;
+  renderer.influenceActive = false;
+  renderer.influenceSectionMemberId = null;
+  renderer.influenceForcePosition = null;
+  renderer.influenceResponseValue = null;
+
+  document.getElementById('influence-panel').classList.add('hidden');
+  document.getElementById('btn-influence').classList.remove('active');
+  render();
+}
+
+function resizeInfluenceCanvas() {
+  const c = document.getElementById('influence-canvas');
+  const panel = document.getElementById('influence-panel');
+  const header = panel.querySelector('.influence-panel-header');
+  c.width = panel.clientWidth;
+  c.height = panel.clientHeight - header.offsetHeight;
+}
+
+function selectInfluenceSection(member, clickX, clickY) {
+  const n1 = nodes.find(n => n.id === member.node1Id);
+  const n2 = nodes.find(n => n.id === member.node2Id);
+  if (!n1 || !n2) return;
+
+  const dx = n2.x - n1.x;
+  const dy = n2.y - n1.y;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((clickX - n1.x) * dx + (clickY - n1.y) * dy) / lenSq : 0.5;
+  t = Math.max(0.01, Math.min(0.99, t));
+
+  influenceSectionMemberId = member.id;
+  influenceSectionT = t;
+  influenceSectionX = n1.x + dx * t;
+  influenceSectionY = n1.y + dy * t;
+  influenceStep = 'ready';
+
+  renderer.influenceSectionMemberId = member.id;
+  renderer.influenceSectionT = t;
+
+  const label = `杆件#${member.id} t=${(t * 100).toFixed(0)}%`;
+  document.getElementById('influence-section-label').textContent = label;
+  document.getElementById('btn-influence-calc').disabled = false;
+
+  updateStatus(`观测截面已选: ${label}，选择响应量后点击"计算"`);
+  render();
+}
+
+function computeInfluenceLine() {
+  if (!influenceSectionMemberId) return;
+
+  const sortedNodes = [...nodes].sort((a, b) => a.x - b.x);
+  if (sortedNodes.length < 2) {
+    alert('节点数不足，无法计算影响线');
+    return;
+  }
+
+  const points = [];
+  for (let i = 0; i < sortedNodes.length - 1; i++) {
+    const nA = sortedNodes[i];
+    const nB = sortedNodes[i + 1];
+    const numInterp = 10;
+    for (let j = 0; j <= numInterp; j++) {
+      if (i > 0 && j === 0) continue;
+      const t = j / numInterp;
+      points.push({
+        x: nA.x + (nB.x - nA.x) * t,
+        nodeAId: nA.id,
+        nodeBId: nB.id,
+        t
+      });
+    }
+  }
+
+  const savedNodeLoads = {};
+  nodes.forEach(n => {
+    savedNodeLoads[n.id] = { fx: n.fx || 0, fy: n.fy || 0, m: n.m || 0 };
+  });
+  const savedMemberLoads = {};
+  members.forEach(m => {
+    savedMemberLoads[m.id] = { q: m.q || 0 };
+  });
+
+  influenceData = {
+    points: [],
+    responseType: influenceResponseType,
+    sectionMemberId: influenceSectionMemberId,
+    sectionT: influenceSectionT
+  };
+
+  const unitForce = 1000;
+
+  for (const pt of points) {
+    nodes.forEach(n => { n.fx = 0; n.fy = 0; n.m = 0; });
+    members.forEach(m => { m.q = 0; });
+
+    const nA = nodes.find(n => n.id === pt.nodeAId);
+    const nB = nodes.find(n => n.id === pt.nodeBId);
+    if (nA && nB && pt.t > 0 && pt.t < 1) {
+      const ratioB = pt.t;
+      const ratioA = 1 - pt.t;
+      nA.fy = -unitForce * ratioA;
+      nB.fy = -unitForce * ratioB;
+    } else {
+      const targetNode = pt.t === 0 ? nA : nB;
+      if (targetNode) targetNode.fy = -unitForce;
+    }
+
+    let result;
+    try {
+      if (analysisMode === 'frame') {
+        result = solveFrame(nodes, members);
+      } else {
+        result = solveTruss(nodes, members);
+      }
+    } catch (e) {
+      influenceData.points.push({ x: pt.x, value: 0 });
+      continue;
+    }
+
+    let value = 0;
+    const mr = result.members.find(m => m.id === influenceSectionMemberId);
+    if (mr) {
+      if (analysisMode === 'truss') {
+        value = mr.axialForce;
+      } else {
+        const t = influenceSectionT;
+        const L = members.find(m => m.id === influenceSectionMemberId).length * 0.01;
+        if (influenceResponseType === 'axial') {
+          value = mr.N1 * (1 - t) + mr.N2 * t;
+        } else if (influenceResponseType === 'shear') {
+          value = mr.V1 * (1 - t) + mr.V2 * t;
+        } else if (influenceResponseType === 'moment') {
+          const x = t * L;
+          value = mr.M1 * (1 - t) + mr.M2 * t;
+        }
+      }
+    }
+
+    influenceData.points.push({ x: pt.x, value });
+  }
+
+  nodes.forEach(n => {
+    const saved = savedNodeLoads[n.id];
+    if (saved) { n.fx = saved.fx; n.fy = saved.fy; n.m = saved.m; }
+  });
+  members.forEach(m => {
+    const saved = savedMemberLoads[m.id];
+    if (saved) { m.q = saved.q; }
+  });
+
+  const lc = getCurrentLoadCase();
+  if (lc && lc.solved && lc.results) {
+    restoreResults(lc.results);
+  }
+
+  influenceHoverIdx = -1;
+  renderer.influenceForcePosition = null;
+  renderer.influenceResponseValue = null;
+  renderer._influenceResponseType = influenceResponseType;
+
+  drawInfluenceLine();
+  render();
+  updateStatus('影响线计算完成');
+}
+
+function drawInfluenceLine() {
+  if (!influenceData || !influenceData.points.length) return;
+
+  const c = document.getElementById('influence-canvas');
+  const ctx = c.getContext('2d');
+  const W = c.width;
+  const H = c.height;
+  if (W <= 0 || H <= 0) return;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const margin = { left: 60, right: 30, top: 20, bottom: 30 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+  if (plotW <= 0 || plotH <= 0) return;
+
+  const pts = influenceData.points;
+  const minX = pts[0].x;
+  const maxX = pts[pts.length - 1].x;
+  const rangeX = maxX - minX || 1;
+
+  let maxVal = 0;
+  let minVal = 0;
+  for (const p of pts) {
+    if (p.value > maxVal) maxVal = p.value;
+    if (p.value < minVal) minVal = p.value;
+  }
+  const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal), 1e-10);
+  const valRange = Math.max(maxVal - minVal, absMax * 0.1);
+  const valCenter = (maxVal + minVal) / 2;
+  const halfRange = Math.max(valRange / 2, absMax * 0.6);
+
+  const mapX = (x) => margin.left + ((x - minX) / rangeX) * plotW;
+  const mapY = (v) => margin.top + plotH / 2 - (v / (halfRange * 2)) * plotH;
+
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, mapY(0));
+  ctx.lineTo(W - margin.right, mapY(0));
+  ctx.stroke();
+
+  for (let i = 1; i <= 4; i++) {
+    const v = halfRange * 2 * (i / 4) * (i % 2 === 0 ? 1 : -1);
+    const y = mapY(v);
+    if (y > margin.top && y < margin.top + plotH) {
+      ctx.strokeStyle = '#f0f0f0';
+      ctx.beginPath();
+      ctx.moveTo(margin.left, y);
+      ctx.lineTo(W - margin.right, y);
+      ctx.stroke();
+    }
+  }
+
+  const zeroY = mapY(0);
+
+  ctx.beginPath();
+  ctx.moveTo(mapX(pts[0].x), zeroY);
+  for (let i = 0; i < pts.length; i++) {
+    ctx.lineTo(mapX(pts[i].x), mapY(pts[i].value));
+  }
+  ctx.lineTo(mapX(pts[pts.length - 1].x), zeroY);
+  ctx.closePath();
+
+  ctx.save();
+  ctx.clip();
+
+  ctx.fillStyle = 'rgba(144, 202, 249, 0.4)';
+  ctx.fillRect(margin.left, mapY(halfRange * 2), plotW, mapY(0) - mapY(halfRange * 2));
+
+  ctx.fillStyle = 'rgba(239, 154, 154, 0.4)';
+  ctx.fillRect(margin.left, mapY(0), plotW, mapY(-halfRange * 2) - mapY(0));
+
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.strokeStyle = '#00695c';
+  ctx.lineWidth = 2;
+  for (let i = 0; i < pts.length; i++) {
+    const px = mapX(pts[i].x);
+    const py = mapY(pts[i].value);
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+
+  let maxPt = pts[0], minPt = pts[0];
+  for (const p of pts) {
+    if (p.value > maxPt.value) maxPt = p;
+    if (p.value < minPt.value) minPt = p;
+  }
+
+  const drawAnnotation = (pt, label, color) => {
+    const px = mapX(pt.x);
+    const py = mapY(pt.value);
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(px, margin.top);
+    ctx.lineTo(px, margin.top + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = color;
+    const valText = analysisMode === 'truss'
+      ? `${(pt.value / 1000).toFixed(3)} kN`
+      : influenceResponseType === 'moment'
+        ? `${(pt.value / 1000).toFixed(3)} kN·m`
+        : `${(pt.value / 1000).toFixed(3)} kN`;
+    const yPos = py < margin.top + plotH / 2 ? py - 8 : py + 14;
+    ctx.fillText(valText, px, yPos);
+    ctx.font = '10px sans-serif';
+    ctx.fillText(`x=${(pt.x * 0.01).toFixed(2)}m`, px, yPos + 13);
+  };
+
+  if (maxPt.value > 1e-10) drawAnnotation(maxPt, '最大值', '#1565c0');
+  if (minPt.value < -1e-10) drawAnnotation(minPt, '最小值', '#c62828');
+
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#666';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${(maxVal / 1000).toFixed(2)}`, margin.left - 6, mapY(maxVal));
+  ctx.fillText(`${(minVal / 1000).toFixed(2)}`, margin.left - 6, mapY(minVal));
+  ctx.fillText('0', margin.left - 6, zeroY);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const xLabel = analysisMode === 'truss'
+    ? '轴力 (kN)'
+    : influenceResponseType === 'moment'
+      ? '弯矩 (kN·m)'
+      : influenceResponseType === 'shear'
+        ? '剪力 (kN)'
+        : '轴力 (kN)';
+  ctx.fillText(xLabel, margin.left + plotW / 2, margin.top + plotH + 14);
+
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('荷载位置 →', margin.left + plotW / 2, margin.top - 4);
+
+  if (influenceHoverIdx >= 0 && influenceHoverIdx < pts.length) {
+    const hp = pts[influenceHoverIdx];
+    const hx = mapX(hp.x);
+    const hy = mapY(hp.value);
+
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = '#00695c';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(hx, margin.top);
+    ctx.lineTo(hx, margin.top + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#00695c';
+    ctx.beginPath();
+    ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    const hoverValText = analysisMode === 'truss'
+      ? `${(hp.value / 1000).toFixed(3)} kN`
+      : influenceResponseType === 'moment'
+        ? `${(hp.value / 1000).toFixed(3)} kN·m`
+        : `${(hp.value / 1000).toFixed(3)} kN`;
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#004d40';
+    ctx.fillText(hoverValText, hx + 8, hy - 4);
+  }
 }
 
 function calcFrameMaxStress(rm, member) {
