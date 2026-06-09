@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>结构力学分析器 - 桁架/刚架</title>
-  <script type="module" crossorigin src="/assets/index-B_EZgAae.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-S0yGhXAn.css">
+  <script type="module" crossorigin src="/assets/index-tE4gvnEP.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Djly7h85.css">
 </head>
 <body>
   <div class="app-container">
@@ -21,6 +21,7 @@
         <button id="btn-influence" class="btn btn-influence">影响线</button>
         <button id="btn-construction" class="btn btn-construction">施工阶段</button>
         <button id="btn-topo" class="btn btn-topo">拓扑优化</button>
+        <button id="btn-compare" class="btn btn-compare">方案对比</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -166,8 +167,8 @@
           </div>
           <div class="topo-params">
             <label>体积分数: <input type="number" id="topo-volfrac" value="0.4" min="0.1" max="0.9" step="0.05" /></label>
-            <label>网格NX: <input type="number" id="topo-nx" value="40" min="10" max="80" step="5" /></label>
-            <label>网格NY: <input type="number" id="topo-ny" value="20" min="5" max="40" step="5" /></label>
+            <label>网格NX: <input type="number" id="topo-nx" value="40" min="20" max="80" step="5" /></label>
+            <label>网格NY: <input type="number" id="topo-ny" value="20" min="10" max="40" step="5" /></label>
           </div>
           <div class="topo-actions">
             <button id="topo-reset-domain" class="btn btn-small">重选区域</button>
@@ -200,6 +201,16 @@
           <button id="topo-result-exit" class="btn btn-small" style="margin-top:6px;">退出拓扑优化</button>
           <button id="topo-restart" class="btn btn-small" style="margin-top:4px;">重新优化</button>
         </div>
+      </div>
+      <div class="panel-section" id="compare-section" style="display:none;">
+        <h3>方案对比</h3>
+        <div class="compare-scheme-actions">
+          <button id="btn-save-scheme" class="btn btn-small">保存当前为方案</button>
+          <span id="scheme-count" class="scheme-count">0/5</span>
+        </div>
+        <div id="scheme-list" class="scheme-list"></div>
+        <div id="compare-metrics" class="compare-metrics" style="display:none;"></div>
+        <button id="btn-exit-compare" class="btn btn-small" style="margin-top:8px;width:100%;">退出对比模式</button>
       </div>
       <div class="panel-section">
         <h3>图例</h3>
@@ -258,6 +269,18 @@
         <div class="legend-item">
           <span class="legend-color" style="background: repeating-linear-gradient(45deg, #ffc107, #ffc107 3px, transparent 3px, transparent 6px);"></span>
           <span>屈服警告区</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-line" style="border-top: 6px solid #ff9800;"></span>
+          <span>对比-截面变化</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-circle" style="border: 3px solid #fdd835; background: rgba(255,235,59,0.3);"></span>
+          <span>对比-支座变化</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-line" style="border-top: 4px dashed #1565c0;"></span>
+          <span>对比-材料变化</span>
         </div>
       </div>
       <div class="panel-section">

@@ -91,6 +91,13 @@ let topoForceDir = 'down';
 let topoDragStart = null;
 let topoDragEnd = null;
 
+let compareActive = false;
+let compareSchemes = [];
+let compareLeftId = null;
+let compareRightId = null;
+let compareDiff = null;
+let compareMetrics = null;
+
 function getCurrentLoadCase() {
   return loadCases.find(lc => lc.id === currentLoadCaseId);
 }
@@ -763,7 +770,8 @@ function saveToStorage() {
       loadCases: loadCases,
       currentLoadCaseId,
       analysisMode,
-      constructionStages
+      constructionStages,
+      compareSchemes
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
@@ -810,6 +818,7 @@ function loadFromStorage() {
     analysisMode = data.analysisMode || 'truss';
     renderer.analysisMode = analysisMode;
     constructionStages = data.constructionStages || [];
+    compareSchemes = data.compareSchemes || [];
 
     applyLoadCaseToNodes(getCurrentLoadCase());
 
@@ -1873,6 +1882,322 @@ function checkTopoCanStart() {
   document.getElementById('topo-start').disabled = !(hasFixed && topoForces.length > 0);
 }
 
+function saveScheme(name) {
+  if (!name || !name.trim()) return;
+  if (compareSchemes.length >= 5) {
+    alert('最多保存5个方案，请先删除旧方案');
+    return;
+  }
+  const scheme = {
+    id: 'sch_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+    name: name.trim(),
+    timestamp: new Date().toLocaleString('zh-CN'),
+    analysisMode,
+    nodes: deepClone(nodes.map(n => ({
+      id: n.id, x: n.x, y: n.y, support: n.support
+    }))),
+    members: deepClone(members.map(m => ({
+      id: m.id, node1Id: m.node1Id, node2Id: m.node2Id,
+      length: m.length, angle: m.angle,
+      E: m.E, A: m.A, I: m.I, h: m.h, rho: m.rho,
+      release1: m.release1, release2: m.release2, q: m.q
+    }))),
+    loadCases: deepClone(loadCases),
+    currentLoadCaseId,
+    results: hasResults ? deepClone({
+      maxForce,
+      maxMoment,
+      nodes: nodes.map(n => ({ id: n.id, dx: n.dx, dy: n.dy, dtheta: n.dtheta })),
+      members: members.map(m => ({ id: m.id, axialForce: m.axialForce, stress: m.stress })),
+      frameResults
+    }) : null
+  };
+  compareSchemes.push(scheme);
+  updateSchemeList();
+  saveToStorage();
+  if (compareActive && compareSchemes.length >= 2) {
+    if (!compareLeftId) compareLeftId = compareSchemes[0].id;
+    if (!compareRightId) compareRightId = compareSchemes.find(s => s.id !== compareLeftId)?.id || null;
+    runCompare();
+  }
+  updateStatus(`方案"${scheme.name}"已保存`);
+}
+
+function deleteScheme(id) {
+  const idx = compareSchemes.findIndex(s => s.id === id);
+  if (idx < 0) return;
+  const name = compareSchemes[idx].name;
+  compareSchemes.splice(idx, 1);
+  if (compareLeftId === id) compareLeftId = null;
+  if (compareRightId === id) compareRightId = null;
+  updateSchemeList();
+  saveToStorage();
+  updateStatus(`方案"${name}"已删除`);
+}
+
+function computeDiff(schemeA, schemeB) {
+  const diff = {
+    memberSectionChanged: new Set(),
+    memberMaterialChanged: new Set(),
+    nodeSupportChanged: new Set(),
+    memberAddedA: new Set(),
+    memberAddedB: new Set(),
+    nodeAddedA: new Set(),
+    nodeAddedB: new Set()
+  };
+  const memberMapA = new Map();
+  const memberMapB = new Map();
+  schemeA.members.forEach(m => memberMapA.set(m.id, m));
+  schemeB.members.forEach(m => memberMapB.set(m.id, m));
+  for (const m of schemeA.members) {
+    if (!memberMapB.has(m.id)) {
+      diff.memberAddedA.add(m.id);
+    } else {
+      const mb = memberMapB.get(m.id);
+      const sectionChanged = Math.abs(m.A - mb.A) > 1e-10 || Math.abs(m.I - mb.I) > 1e-10 || Math.abs(m.h - mb.h) > 1e-10;
+      if (sectionChanged) diff.memberSectionChanged.add(m.id);
+      const materialChanged = Math.abs(m.E - mb.E) > 1e3;
+      if (materialChanged) diff.memberMaterialChanged.add(m.id);
+    }
+  }
+  for (const m of schemeB.members) {
+    if (!memberMapA.has(m.id)) {
+      diff.memberAddedB.add(m.id);
+    }
+  }
+  const nodeMapA = new Map();
+  const nodeMapB = new Map();
+  schemeA.nodes.forEach(n => nodeMapA.set(n.id, n));
+  schemeB.nodes.forEach(n => nodeMapB.set(n.id, n));
+  for (const n of schemeA.nodes) {
+    if (!nodeMapB.has(n.id)) {
+      diff.nodeAddedA.add(n.id);
+    } else {
+      const nb = nodeMapB.get(n.id);
+      if (n.support !== nb.support) diff.nodeSupportChanged.add(n.id);
+    }
+  }
+  for (const n of schemeB.nodes) {
+    if (!nodeMapA.has(n.id)) {
+      diff.nodeAddedB.add(n.id);
+    }
+  }
+  return diff;
+}
+
+function computeSchemeMetrics(scheme) {
+  const PIXEL_TO_METER = 0.01;
+  let totalWeight = 0;
+  let maxDisplacement = 0;
+  let maxStress = 0;
+  let minSafetyFactor = Infinity;
+  for (const m of scheme.members) {
+    const lengthM = m.length * PIXEL_TO_METER;
+    const volume = m.A * lengthM;
+    const rho = m.rho || 7850;
+    totalWeight += rho * volume * 9.81;
+  }
+  if (scheme.results) {
+    for (const n of scheme.results.nodes) {
+      const disp = Math.sqrt((n.dx || 0) * (n.dx || 0) + (n.dy || 0) * (n.dy || 0));
+      if (disp > maxDisplacement) maxDisplacement = disp;
+    }
+    for (const m of scheme.results.members) {
+      const s = Math.abs(m.stress || 0);
+      if (s > maxStress) maxStress = s;
+      if (s > 1e-6) {
+        const sf = YIELD_STRESS / s;
+        if (sf < minSafetyFactor) minSafetyFactor = sf;
+      }
+    }
+  }
+  if (minSafetyFactor === Infinity) minSafetyFactor = 0;
+  return { totalWeight, maxDisplacement, maxStress, minSafetyFactor };
+}
+
+function enterCompareMode() {
+  if (modalActive) exitModalMode();
+  if (influenceActive) exitInfluenceMode();
+  if (constructionActive) exitConstructionMode();
+  if (topoActive) exitTopoMode();
+  if (sectionStressActive) hideSectionStressView();
+  compareActive = true;
+  if (compareSchemes.length >= 2) {
+    if (!compareLeftId && compareSchemes.length > 0) compareLeftId = compareSchemes[0].id;
+    if (!compareRightId && compareSchemes.length > 1) compareRightId = compareSchemes[1].id;
+    if (compareLeftId === compareRightId && compareSchemes.length > 1) {
+      compareRightId = compareSchemes.find(s => s.id !== compareLeftId)?.id || null;
+    }
+    runCompare();
+  } else {
+    renderer.compareData = null;
+  }
+  document.getElementById('compare-section').style.display = 'block';
+  document.getElementById('btn-compare').classList.add('active');
+  updateSchemeList();
+  render();
+  updateStatus(compareSchemes.length >= 2 ? '方案对比模式: 结构不可编辑，选择两个方案进行对比' : '方案对比模式: 请先保存至少2个方案');
+}
+
+function exitCompareMode() {
+  compareActive = false;
+  compareDiff = null;
+  compareMetrics = null;
+  compareLeftId = null;
+  compareRightId = null;
+  renderer.compareData = null;
+  document.getElementById('compare-section').style.display = 'none';
+  document.getElementById('btn-compare').classList.remove('active');
+  document.getElementById('compare-metrics').style.display = 'none';
+  const lc = getCurrentLoadCase();
+  if (lc && lc.solved && lc.results) {
+    restoreResults(lc.results);
+  } else {
+    hasResults = false;
+    renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
+  }
+  render();
+  updateResultsDisplay();
+}
+
+function runCompare() {
+  const schemeA = compareSchemes.find(s => s.id === compareLeftId);
+  const schemeB = compareSchemes.find(s => s.id === compareRightId);
+  if (!schemeA || !schemeB) {
+    compareDiff = null;
+    compareMetrics = null;
+    renderer.compareData = null;
+    return;
+  }
+  compareDiff = computeDiff(schemeA, schemeB);
+  const metricsA = computeSchemeMetrics(schemeA);
+  const metricsB = computeSchemeMetrics(schemeB);
+  compareMetrics = { left: metricsA, right: metricsB };
+  renderer.compareData = {
+    schemeA,
+    schemeB,
+    diff: compareDiff,
+    metrics: compareMetrics
+  };
+  updateCompareMetrics();
+  render();
+}
+
+function updateSchemeList() {
+  const container = document.getElementById('scheme-list');
+  if (!container) return;
+  const countEl = document.getElementById('scheme-count');
+  if (countEl) countEl.textContent = `${compareSchemes.length}/5`;
+  container.innerHTML = '';
+  compareSchemes.forEach(sch => {
+    const item = document.createElement('div');
+    item.className = 'scheme-item';
+    const isLeft = sch.id === compareLeftId;
+    const isRight = sch.id === compareRightId;
+    if (isLeft) item.classList.add('left-selected');
+    if (isRight) item.classList.add('right-selected');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'scheme-name';
+    nameSpan.textContent = sch.name;
+    const tagSpan = document.createElement('span');
+    tagSpan.className = 'scheme-tags';
+    if (isLeft) tagSpan.innerHTML += '<span class="scheme-tag tag-left">A</span>';
+    if (isRight) tagSpan.innerHTML += '<span class="scheme-tag tag-right">B</span>';
+    const deleteBtn = document.createElement('span');
+    deleteBtn.className = 'scheme-delete';
+    deleteBtn.textContent = '×';
+    deleteBtn.title = '删除方案';
+    deleteBtn.onclick = (e) => {
+      e.stopPropagation();
+      deleteScheme(sch.id);
+      if (compareActive) runCompare();
+    };
+    item.onclick = () => {
+      if (!compareActive) return;
+      if (!compareLeftId || (compareLeftId === sch.id && compareRightId)) {
+        compareLeftId = sch.id;
+      } else if (!compareRightId || compareRightId === sch.id) {
+        compareRightId = sch.id;
+      } else {
+        compareRightId = sch.id;
+      }
+      if (compareLeftId === compareRightId) {
+        const other = compareSchemes.find(s => s.id !== compareLeftId);
+        if (other) compareRightId = other.id;
+      }
+      updateSchemeList();
+      runCompare();
+    };
+    item.appendChild(nameSpan);
+    item.appendChild(tagSpan);
+    item.appendChild(deleteBtn);
+    container.appendChild(item);
+  });
+}
+
+function updateCompareMetrics() {
+  const container = document.getElementById('compare-metrics');
+  if (!container || !compareMetrics) return;
+  container.style.display = 'block';
+  const l = compareMetrics.left;
+  const r = compareMetrics.right;
+  const fmt = (v, unit) => `${v.toFixed(2)} ${unit}`;
+  const diffPct = (a, b) => {
+    if (Math.abs(a) < 1e-12) return b > 0 ? '+∞%' : '0%';
+    const pct = ((b - a) / Math.abs(a)) * 100;
+    const sign = pct > 0 ? '+' : '';
+    return `${sign}${pct.toFixed(1)}%`;
+  };
+  const diffClass = (a, b, lowerBetter = false) => {
+    if (Math.abs(a) < 1e-12 && Math.abs(b) < 1e-12) return 'diff-neutral';
+    const pct = Math.abs(a) < 1e-12 ? 999 : ((b - a) / Math.abs(a)) * 100;
+    if (Math.abs(pct) < 0.5) return 'diff-neutral';
+    if (lowerBetter) return pct < 0 ? 'diff-better' : 'diff-worse';
+    return pct > 0 ? 'diff-better' : 'diff-worse';
+  };
+  container.innerHTML = `
+    <h4>关键指标对比</h4>
+    <table class="compare-table">
+      <thead>
+        <tr><th>指标</th><th>方案 A</th><th>方案 B</th><th>变化</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>总重量</td>
+          <td>${fmt(l.totalWeight, 'N')}</td>
+          <td>${fmt(r.totalWeight, 'N')}</td>
+          <td class="${diffClass(l.totalWeight, r.totalWeight, true)}">${diffPct(l.totalWeight, r.totalWeight)}</td>
+        </tr>
+        <tr>
+          <td>最大位移</td>
+          <td>${(l.maxDisplacement * 1000).toFixed(4)} mm</td>
+          <td>${(r.maxDisplacement * 1000).toFixed(4)} mm</td>
+          <td class="${diffClass(l.maxDisplacement, r.maxDisplacement, true)}">${diffPct(l.maxDisplacement, r.maxDisplacement)}</td>
+        </tr>
+        <tr>
+          <td>最大应力</td>
+          <td>${(l.maxStress / 1e6).toFixed(2)} MPa</td>
+          <td>${(r.maxStress / 1e6).toFixed(2)} MPa</td>
+          <td class="${diffClass(l.maxStress, r.maxStress, true)}">${diffPct(l.maxStress, r.maxStress)}</td>
+        </tr>
+        <tr>
+          <td>最小安全系数</td>
+          <td>${l.minSafetyFactor.toFixed(3)}</td>
+          <td>${r.minSafetyFactor.toFixed(3)}</td>
+          <td class="${diffClass(l.minSafetyFactor, r.minSafetyFactor, false)}">${diffPct(l.minSafetyFactor, r.minSafetyFactor)}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="compare-legend">
+      <span class="compare-legend-item"><span class="legend-line orange-bold"></span> 截面变化</span>
+      <span class="compare-legend-item"><span class="legend-circle yellow"></span> 支座变化</span>
+      <span class="compare-legend-item"><span class="legend-line blue-dash"></span> 材料变化</span>
+    </div>
+  `;
+}
+
 function init() {
   renderer.resize();
 
@@ -1929,6 +2254,7 @@ function init() {
   updateResultsDisplay();
   updateAnalysisModeButtons();
   updateForceDiagramButtons();
+  updateSchemeList();
 }
 
 function render() {
@@ -2673,6 +2999,7 @@ function exportJSON() {
 
 canvas.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
+  if (compareActive) return;
 
   hideContextMenu();
 
@@ -2769,6 +3096,7 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
+  if (compareActive) return;
   const pos = getMousePos(e);
 
   if (!influenceActive && !topoActive) {
@@ -2870,6 +3198,7 @@ canvas.addEventListener('mousemove', (e) => {
 
 canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
+  if (compareActive) return;
 
   if (influenceActive) return;
 
@@ -2985,6 +3314,7 @@ canvas.addEventListener('mouseup', (e) => {
 });
 
 canvas.addEventListener('contextmenu', (e) => {
+  if (compareActive) { e.preventDefault(); return; }
   if (influenceActive) { e.preventDefault(); return; }
   if (topoActive) { e.preventDefault(); return; }
   const pos = getMousePos(e);
@@ -2999,6 +3329,7 @@ canvas.addEventListener('contextmenu', (e) => {
 });
 
 canvas.addEventListener('dblclick', (e) => {
+  if (compareActive) return;
   if (influenceActive) return;
   if (topoActive) return;
   const pos = getMousePos(e);
@@ -3197,8 +3528,10 @@ document.getElementById('btn-clear').addEventListener('click', () => {
     if (influenceActive) exitInfluenceMode();
     if (constructionActive) exitConstructionMode();
     if (topoActive) exitTopoMode();
+    if (compareActive) exitCompareMode();
     constructionStages = [];
     currentStageIndex = -1;
+    compareSchemes = [];
     nodes = [];
     members = [];
     loadCases = [createLoadCase('默认工况')];
@@ -4436,6 +4769,30 @@ document.getElementById('btn-topo').addEventListener('click', () => {
     enterTopoMode();
   }
 });
+
+document.getElementById('btn-compare').addEventListener('click', () => {
+  if (compareActive) {
+    exitCompareMode();
+  } else {
+    enterCompareMode();
+  }
+});
+
+document.getElementById('btn-save-scheme').addEventListener('click', () => {
+  const defaultName = `方案${compareSchemes.length + 1}`;
+  const html = `
+    <div class="form-group">
+      <label>方案名称</label>
+      <input type="text" id="input-scheme-name" value="${defaultName}" />
+    </div>
+  `;
+  showModal('保存方案', html, () => {
+    const name = document.getElementById('input-scheme-name').value.trim();
+    if (name) saveScheme(name);
+  });
+});
+
+document.getElementById('btn-exit-compare').addEventListener('click', exitCompareMode);
 
 document.getElementById('topo-start').addEventListener('click', startTopoOptimization);
 document.getElementById('topo-reset-domain').addEventListener('click', resetTopoDomain);

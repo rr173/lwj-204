@@ -30,6 +30,7 @@ export class Renderer {
     this.topoDragRect = null;
     this.topoHoverDensity = null;
     this.topoHoverEdge = null;
+    this.compareData = null;
   }
 
   resize() {
@@ -884,6 +885,12 @@ export class Renderer {
 
   render(nodes, members, extras = {}) {
     this.clear();
+
+    if (this.compareData) {
+      this.drawCompareView();
+      return;
+    }
+
     this.drawGrid();
 
     this._membersRef = members;
@@ -1104,6 +1111,238 @@ export class Renderer {
         ctx.fillStyle = '#ff6f00';
         ctx.fillText(`ρ=${h.density.toFixed(3)}`, hx + d.elemW + 4, hy + d.elemH / 2 + 4);
       }
+    }
+  }
+
+  drawCompareView() {
+    const ctx = this.ctx;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const cd = this.compareData;
+    if (!cd || !cd.schemeA || !cd.schemeB) return;
+
+    const halfW = Math.floor(w / 2);
+
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, halfW, h);
+    ctx.clip();
+    this.drawCompareScheme(cd.schemeA, cd.diff, 'left', halfW, h);
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(halfW, 0, halfW, h);
+    ctx.clip();
+    ctx.translate(halfW, 0);
+    this.drawCompareScheme(cd.schemeB, cd.diff, 'right', halfW, h);
+    ctx.restore();
+
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(halfW, 0);
+    ctx.lineTo(halfW, h);
+    ctx.stroke();
+
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#333';
+    ctx.fillText(`方案 A: ${cd.schemeA.name}`, halfW / 2, 20);
+    ctx.fillText(`方案 B: ${cd.schemeB.name}`, halfW + halfW / 2, 20);
+
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#999';
+    ctx.fillText(cd.schemeA.timestamp, halfW / 2, 36);
+    ctx.fillText(cd.schemeB.timestamp, halfW + halfW / 2, 36);
+  }
+
+  drawCompareScheme(scheme, diff, side, areaW, areaH) {
+    const ctx = this.ctx;
+    const gridSize = 50;
+    ctx.strokeStyle = '#e8e8e8';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < areaW; x += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, areaH);
+      ctx.stroke();
+    }
+    for (let y = 0; y < areaH; y += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(areaW, y);
+      ctx.stroke();
+    }
+
+    const nodeMap = new Map();
+    scheme.nodes.forEach(n => nodeMap.set(n.id, n));
+
+    for (const member of scheme.members) {
+      const n1 = nodeMap.get(member.node1Id);
+      const n2 = nodeMap.get(member.node2Id);
+      if (!n1 || !n2) continue;
+
+      const isSectionChanged = diff.memberSectionChanged.has(member.id);
+      const isMaterialChanged = diff.memberMaterialChanged.has(member.id);
+      const isAdded = (side === 'left' && diff.memberAddedA.has(member.id)) ||
+                      (side === 'right' && diff.memberAddedB.has(member.id));
+
+      if (isSectionChanged) {
+        ctx.strokeStyle = '#ff9800';
+        ctx.lineWidth = 8;
+        ctx.setLineDash([]);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        ctx.lineTo(n2.x, n2.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(255,152,0,0.4)';
+        ctx.lineWidth = 14;
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        ctx.lineTo(n2.x, n2.y);
+        ctx.stroke();
+      } else if (isMaterialChanged) {
+        ctx.strokeStyle = '#1565c0';
+        ctx.lineWidth = 6;
+        ctx.setLineDash([10, 5]);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        ctx.lineTo(n2.x, n2.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (isAdded) {
+        ctx.strokeStyle = side === 'left' ? 'rgba(33,150,243,0.5)' : 'rgba(244,67,54,0.5)';
+        ctx.lineWidth = 5;
+        ctx.setLineDash([6, 4]);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        ctx.lineTo(n2.x, n2.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 4;
+        ctx.setLineDash([]);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        ctx.lineTo(n2.x, n2.y);
+        ctx.stroke();
+      }
+
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#666';
+      const mx = (n1.x + n2.x) / 2;
+      const my = (n1.y + n2.y) / 2;
+      ctx.fillText(`#${member.id}`, mx, my - 8);
+    }
+
+    for (const node of scheme.nodes) {
+      const isSupportChanged = diff.nodeSupportChanged.has(node.id);
+      const isAdded = (side === 'left' && diff.nodeAddedA.has(node.id)) ||
+                      (side === 'right' && diff.nodeAddedB.has(node.id));
+
+      this.drawCompareSupport(node);
+
+      if (isSupportChanged) {
+        ctx.strokeStyle = '#fdd835';
+        ctx.lineWidth = 3;
+        ctx.fillStyle = 'rgba(255,235,59,0.3)';
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = '#f9a825';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, 22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.fillStyle = isAdded ? 'rgba(244,67,54,0.6)' : '#fff';
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#666';
+      ctx.fillText(`#${node.id}`, node.x, node.y - 14);
+    }
+  }
+
+  drawCompareSupport(node) {
+    const ctx = this.ctx;
+    if (node.support === 'free') return;
+    const x = node.x;
+    const y = node.y;
+
+    if (node.support === 'fixed') {
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x - 15, y + 15);
+      ctx.lineTo(x + 15, y + 15);
+      ctx.stroke();
+      for (let i = -12; i <= 12; i += 6) {
+        ctx.beginPath();
+        ctx.moveTo(x + i, y + 15);
+        ctx.lineTo(x + i - 5, y + 22);
+        ctx.stroke();
+      }
+    } else if (node.support === 'pinned') {
+      ctx.fillStyle = '#4caf50';
+      ctx.strokeStyle = '#2e7d32';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y + 15);
+      ctx.lineTo(x - 12, y + 30);
+      ctx.lineTo(x + 12, y + 30);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      for (let i = -10; i <= 10; i += 5) {
+        ctx.beginPath();
+        ctx.moveTo(x + i, y + 30);
+        ctx.lineTo(x + i - 3, y + 36);
+        ctx.stroke();
+      }
+    } else if (node.support === 'roller') {
+      ctx.fillStyle = '#2196f3';
+      ctx.strokeStyle = '#1565c0';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y + 12);
+      ctx.lineTo(x - 15, y + 25);
+      ctx.lineTo(x + 15, y + 25);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(x - 8, y + 30, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x + 8, y + 30, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
   }
 }
