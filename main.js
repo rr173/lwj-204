@@ -885,8 +885,11 @@ function setStageNodeLoad(stageId, nodeId, fx, fy, m) {
   if (!stage) return;
   if (!stage.nodeLoads) stage.nodeLoads = {};
   stage.nodeLoads[nodeId] = { fx: fx || 0, fy: fy || 0, m: m || 0 };
-  stage.solved = false;
-  stage.incrementalResults = null;
+  const idx = constructionStages.indexOf(stage);
+  for (let i = idx; i < constructionStages.length; i++) {
+    constructionStages[i].solved = false;
+    constructionStages[i].incrementalResults = null;
+  }
   saveToStorage();
 }
 
@@ -895,8 +898,11 @@ function setStageMemberLoad(stageId, memberId, q) {
   if (!stage) return;
   if (!stage.memberLoads) stage.memberLoads = {};
   stage.memberLoads[memberId] = { q: q || 0 };
-  stage.solved = false;
-  stage.incrementalResults = null;
+  const idx = constructionStages.indexOf(stage);
+  for (let i = idx; i < constructionStages.length; i++) {
+    constructionStages[i].solved = false;
+    constructionStages[i].incrementalResults = null;
+  }
   saveToStorage();
 }
 
@@ -1039,6 +1045,53 @@ function applyStageVisualization() {
   const cumulativeIds = getStageCumulativeMemberIds(currentStageIndex);
   const allSolvedUpToCurrent = constructionStages.slice(0, currentStageIndex + 1).every(s => s.solved);
 
+  const cumulativeNodeLoads = {};
+  const cumulativeMemberLoads = {};
+  for (let i = 0; i <= currentStageIndex; i++) {
+    const stg = constructionStages[i];
+    if (stg.nodeLoads) {
+      for (const nid in stg.nodeLoads) {
+        if (!cumulativeNodeLoads[nid]) cumulativeNodeLoads[nid] = { fx: 0, fy: 0, m: 0 };
+        cumulativeNodeLoads[nid].fx += stg.nodeLoads[nid].fx || 0;
+        cumulativeNodeLoads[nid].fy += stg.nodeLoads[nid].fy || 0;
+        cumulativeNodeLoads[nid].m += stg.nodeLoads[nid].m || 0;
+      }
+    }
+    if (analysisMode === 'frame' && stg.memberLoads) {
+      for (const mid in stg.memberLoads) {
+        if (!cumulativeMemberLoads[mid]) cumulativeMemberLoads[mid] = { q: 0 };
+        cumulativeMemberLoads[mid].q += stg.memberLoads[mid].q || 0;
+      }
+    }
+  }
+
+  const savedNodeLoads = {};
+  const savedMemberLoads = {};
+  nodes.forEach(n => { savedNodeLoads[n.id] = { fx: n.fx, fy: n.fy, m: n.m }; });
+  members.forEach(m => { savedMemberLoads[m.id] = { q: m.q }; });
+
+  nodes.forEach(n => {
+    const sl = cumulativeNodeLoads[n.id];
+    if (sl) { n.fx = sl.fx; n.fy = sl.fy; n.m = sl.m; }
+    else { n.fx = 0; n.fy = 0; n.m = 0; }
+  });
+  members.forEach(m => {
+    if (cumulativeIds.has(m.id)) {
+      const ml = cumulativeMemberLoads[m.id];
+      m.q = ml ? ml.q : 0;
+    } else {
+      m.q = 0;
+    }
+  });
+
+  const savedDx = {};
+  const savedDy = {};
+  const savedDtheta = {};
+  nodes.forEach(n => { savedDx[n.id] = n.dx; savedDy[n.id] = n.dy; savedDtheta[n.id] = n.dtheta; });
+  const savedAxial = {};
+  const savedStress = {};
+  members.forEach(m => { savedAxial[m.id] = m.axialForce; savedStress[m.id] = m.stress; });
+
   const cumulative = allSolvedUpToCurrent ? getCumulativeStageResults(currentStageIndex) : null;
 
   if (cumulative) {
@@ -1073,13 +1126,15 @@ function applyStageVisualization() {
       members.forEach(m => {
         const cf = cumulative.cumulativeMemberForces[m.id];
         if (cf && cumulativeIds.has(m.id)) {
+          const ml = cumulativeMemberLoads[m.id];
+          const qVal = ml ? ml.q : 0;
           memberResults.push({
             id: m.id,
             axialForce: cf.axialForce,
             stress: cf.stress,
             N1: cf.N1, V1: cf.V1, M1: cf.M1,
             N2: cf.N2, V2: cf.V2, M2: cf.M2,
-            q: cf.q
+            q: qVal
           });
           maxForce = Math.max(maxForce, Math.abs(cf.N1), Math.abs(cf.N2), Math.abs(cf.V1), Math.abs(cf.V2));
           maxMoment = Math.max(maxMoment, Math.abs(cf.M1), Math.abs(cf.M2));
@@ -1117,7 +1172,14 @@ function applyStageVisualization() {
 
   renderer.constructionStageInfo = {
     activeMemberIds: cumulativeIds,
-    currentStageIndex
+    currentStageIndex,
+    _savedNodeLoads: savedNodeLoads,
+    _savedMemberLoads: savedMemberLoads,
+    _savedDx: savedDx,
+    _savedDy: savedDy,
+    _savedDtheta: savedDtheta,
+    _savedAxial: savedAxial,
+    _savedStress: savedStress
   };
 }
 
@@ -1140,6 +1202,34 @@ function enterConstructionMode() {
 
 function exitConstructionMode() {
   constructionActive = false;
+  const info = renderer.constructionStageInfo;
+  if (info) {
+    if (info._savedNodeLoads) {
+      nodes.forEach(n => {
+        const sl = info._savedNodeLoads[n.id];
+        if (sl) { n.fx = sl.fx; n.fy = sl.fy; n.m = sl.m; }
+      });
+    }
+    if (info._savedMemberLoads) {
+      members.forEach(m => {
+        const ml = info._savedMemberLoads[m.id];
+        if (ml) { m.q = ml.q; }
+      });
+    }
+    if (info._savedDx) {
+      nodes.forEach(n => {
+        n.dx = info._savedDx[n.id] || 0;
+        n.dy = info._savedDy[n.id] || 0;
+        n.dtheta = info._savedDtheta[n.id] || 0;
+      });
+    }
+    if (info._savedAxial) {
+      members.forEach(m => {
+        m.axialForce = info._savedAxial[m.id] || 0;
+        m.stress = info._savedStress[m.id] || 0;
+      });
+    }
+  }
   currentStageIndex = -1;
   renderer.constructionStageInfo = null;
   document.getElementById('btn-construction').classList.remove('active');
@@ -1153,8 +1243,6 @@ function exitConstructionMode() {
     renderer.hasResults = false;
     frameResults = null;
     renderer.frameResults = null;
-    nodes.forEach(n => { n.dx = 0; n.dy = 0; n.dtheta = 0; });
-    members.forEach(m => { m.axialForce = 0; m.stress = 0; });
   }
   render();
   updateResultsDisplay();
@@ -3407,13 +3495,31 @@ window._setStageNodeLoad = function(stageId, nodeId, dof, value) {
   if (!stage.nodeLoads) stage.nodeLoads = {};
   if (!stage.nodeLoads[nodeId]) stage.nodeLoads[nodeId] = { fx: 0, fy: 0, m: 0 };
   stage.nodeLoads[nodeId][dof] = parseFloat(value) || 0;
-  stage.solved = false;
-  stage.incrementalResults = null;
+  const idx = constructionStages.indexOf(stage);
+  for (let i = idx; i < constructionStages.length; i++) {
+    constructionStages[i].solved = false;
+    constructionStages[i].incrementalResults = null;
+  }
+  updateStageList();
+  applyStageVisualization();
+  render();
   saveToStorage();
 };
 
 window._setStageMemberLoad = function(stageId, memberId, value) {
-  setStageMemberLoad(stageId, memberId, parseFloat(value) || 0);
+  const stage = constructionStages.find(s => s.id === stageId);
+  if (!stage) return;
+  if (!stage.memberLoads) stage.memberLoads = {};
+  stage.memberLoads[memberId] = { q: parseFloat(value) || 0 };
+  const idx = constructionStages.indexOf(stage);
+  for (let i = idx; i < constructionStages.length; i++) {
+    constructionStages[i].solved = false;
+    constructionStages[i].incrementalResults = null;
+  }
+  updateStageList();
+  applyStageVisualization();
+  render();
+  saveToStorage();
 };
 
 document.querySelectorAll('.panel-tab').forEach(tab => {
