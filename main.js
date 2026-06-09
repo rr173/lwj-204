@@ -68,6 +68,17 @@ let previewLine = null;
 let hoveredMember = null;
 let contextMenuTarget = null;
 
+let sectionStressActive = false;
+let sectionStressMemberId = null;
+let sectionStressZoom = 1;
+let sectionStressPanX = 0;
+let sectionStressPanY = 0;
+let sectionStressDragging = false;
+let sectionStressDragStartX = 0;
+let sectionStressDragStartY = 0;
+let sectionStressDragStartPanX = 0;
+let sectionStressDragStartPanY = 0;
+
 function getCurrentLoadCase() {
   return loadCases.find(lc => lc.id === currentLoadCaseId);
 }
@@ -290,6 +301,7 @@ function solveCurrentLoadCase() {
     updateEnvelopeIfNeeded();
     updateResultsDisplay();
     render();
+    if (sectionStressActive) drawSectionStressCloud();
     updateStatus('求解成功!');
     saveToStorage();
   } catch (e) {
@@ -725,7 +737,8 @@ function saveToStorage() {
         release1: m.release1,
         release2: m.release2,
         q: m.q,
-        rho: m.rho
+        rho: m.rho,
+        h: m.h
       })),
       loadCases: loadCases,
       currentLoadCaseId,
@@ -766,6 +779,7 @@ function loadFromStorage() {
       release2: m.release2 || false,
       q: m.q || 0,
       rho: m.rho || 7850,
+      h: m.h || 0.2,
       axialForce: 0,
       stress: 0,
       selected: false
@@ -1625,6 +1639,7 @@ function clearSelection() {
   members.forEach(m => m.selected = false);
   selectedNodes.clear();
   selectedMembers.clear();
+  if (sectionStressActive) hideSectionStressView();
 }
 
 function selectInBox(box) {
@@ -1951,6 +1966,17 @@ function showMemberDialog(member) {
       <label>惯性矩 I (cm⁴)</label>
       <input type="number" id="input-i" value="${iCm4}" step="0.1" min="0" />
     </div>
+    <div class="form-group">
+      <label>截面高度 h (cm)</label>
+      <input type="number" id="input-h" value="${(member.h * 100).toFixed(1)}" step="0.5" min="0.1" />
+    </div>
+    `;
+  } else {
+    html += `
+    <div class="form-group">
+      <label>截面高度 h (cm)</label>
+      <input type="number" id="input-h" value="${(member.h * 100).toFixed(1)}" step="0.5" min="0.1" />
+    </div>
     `;
   }
 
@@ -1966,6 +1992,10 @@ function showMemberDialog(member) {
     member.A = (parseFloat(document.getElementById('input-a').value) || 10) * 1e-4;
     if (analysisMode === 'frame') {
       member.I = (parseFloat(document.getElementById('input-i').value) || 1) * 1e-8;
+    }
+    const hInput = document.getElementById('input-h');
+    if (hInput) {
+      member.h = (parseFloat(hInput.value) || 20) * 1e-2;
     }
     member.rho = parseFloat(document.getElementById('input-rho').value) || 7850;
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
@@ -2331,6 +2361,11 @@ canvas.addEventListener('mousedown', (e) => {
       clearSelection();
       member.selected = true;
       selectedMembers.add(member.id);
+    }
+    if (member.selected && hasResults) {
+      showSectionStressView(member);
+    } else if (!member.selected && sectionStressMemberId === member.id) {
+      hideSectionStressView();
     }
     mouseState.mode = null;
   } else {
@@ -2784,11 +2819,71 @@ document.getElementById('scale-factor').addEventListener('change', (e) => {
   render();
 });
 
+document.getElementById('btn-section-stress-close').addEventListener('click', hideSectionStressView);
+
+const sectionStressCanvas = document.getElementById('section-stress-canvas');
+sectionStressCanvas.addEventListener('mousemove', (e) => {
+  updateSectionStressTooltip(e);
+  if (sectionStressDragging) {
+    const dx = e.clientX - sectionStressDragStartX;
+    const dy = e.clientY - sectionStressDragStartY;
+    sectionStressPanX = sectionStressDragStartPanX + dx;
+    sectionStressPanY = sectionStressDragStartPanY + dy;
+    drawSectionStressCloud();
+  }
+});
+
+sectionStressCanvas.addEventListener('mouseleave', () => {
+  document.getElementById('section-stress-tooltip').classList.add('hidden');
+  sectionStressDragging = false;
+});
+
+sectionStressCanvas.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  sectionStressDragging = true;
+  sectionStressDragStartX = e.clientX;
+  sectionStressDragStartY = e.clientY;
+  sectionStressDragStartPanX = sectionStressPanX;
+  sectionStressDragStartPanY = sectionStressPanY;
+  e.preventDefault();
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (sectionStressDragging) {
+    sectionStressDragging = false;
+  }
+});
+
+sectionStressCanvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  const oldZoom = sectionStressZoom;
+  sectionStressZoom = Math.max(0.5, Math.min(5, sectionStressZoom * delta));
+
+  const rect = sectionStressCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const margin = { left: 55, right: 20, top: 25, bottom: 35 };
+  const plotMX = mx - margin.left - sectionStressPanX;
+  const plotMY = my - margin.top - sectionStressPanY;
+
+  const zoomRatio = sectionStressZoom / oldZoom;
+  sectionStressPanX -= plotMX * (zoomRatio - 1);
+  sectionStressPanY -= plotMY * (zoomRatio - 1);
+
+  drawSectionStressCloud();
+}, { passive: false });
+
 window.addEventListener('resize', () => {
   renderer.resize();
   if (influenceActive) {
     resizeInfluenceCanvas();
     if (influenceData) drawInfluenceLine();
+  }
+  if (sectionStressActive) {
+    resizeSectionStressCanvas();
+    drawSectionStressCloud();
   }
   render();
 });
@@ -3194,6 +3289,347 @@ function drawInfluenceLine() {
     ctx.fillStyle = '#004d40';
     ctx.fillText(hoverValText, hx + 8, hy - 4);
   }
+}
+
+function getSectionStressColor(stress, maxAbsStress) {
+  if (maxAbsStress < 1e-6) return 'rgb(224,224,224)';
+  const norm = Math.min(Math.abs(stress) / maxAbsStress, 1);
+  if (stress >= 0) {
+    const r = Math.round(224 - norm * 120);
+    const g = Math.round(224 - norm * 80);
+    const b = Math.round(224 + norm * 31);
+    return `rgb(${r},${g},${b})`;
+  } else {
+    const r = Math.round(224 + norm * 30);
+    const g = Math.round(224 - norm * 100);
+    const b = Math.round(224 - norm * 120);
+    return `rgb(${r},${g},${b})`;
+  }
+}
+
+function showSectionStressView(member) {
+  if (!hasResults) return;
+  sectionStressActive = true;
+  sectionStressMemberId = member.id;
+  sectionStressZoom = 1;
+  sectionStressPanX = 0;
+  sectionStressPanY = 0;
+
+  const panel = document.getElementById('section-stress-panel');
+  panel.classList.remove('hidden');
+
+  document.getElementById('section-stress-member-label').textContent =
+    `杆件 #${member.id}  L=${(member.length * 0.01).toFixed(3)}m  h=${(member.h * 100).toFixed(1)}cm`;
+
+  resizeSectionStressCanvas();
+  drawSectionStressCloud();
+}
+
+function hideSectionStressView() {
+  sectionStressActive = false;
+  sectionStressMemberId = null;
+  document.getElementById('section-stress-panel').classList.add('hidden');
+}
+
+function resizeSectionStressCanvas() {
+  const c = document.getElementById('section-stress-canvas');
+  const panel = document.getElementById('section-stress-panel');
+  const header = panel.querySelector('.section-stress-header');
+  const colorbar = panel.querySelector('.section-stress-colorbar');
+  c.width = panel.clientWidth;
+  c.height = panel.clientHeight - header.offsetHeight - colorbar.offsetHeight;
+}
+
+function computeMemberStressField(member, mr, numLengthSeg, numHeightSeg) {
+  const L = member.length * 0.01;
+  const h = member.h;
+  const I = member.I;
+  const A = member.A;
+  const q = mr.q || 0;
+  const M1 = mr.M1;
+  const M2 = mr.M2;
+  const N1 = mr.N1;
+  const N2 = mr.N2;
+
+  const field = [];
+
+  for (let i = 0; i <= numLengthSeg; i++) {
+    const t = i / numLengthSeg;
+    const x = t * L;
+    const row = [];
+
+    let M, N;
+    if (Math.abs(q) > 1e-10) {
+      M = M1 * (1 - t) + M2 * t + q * x * (L - x) / 2;
+    } else {
+      M = M1 * (1 - t) + M2 * t;
+    }
+    N = N1 * (1 - t) + N2 * t;
+
+    const sigmaAxial = N / A;
+
+    for (let j = 0; j <= numHeightSeg; j++) {
+      const s = j / numHeightSeg;
+      const y = h / 2 - s * h;
+      const sigmaBending = I > 0 ? M * y / I : 0;
+      row.push(sigmaAxial + sigmaBending);
+    }
+    field.push(row);
+  }
+
+  return field;
+}
+
+function drawSectionStressCloud() {
+  if (!sectionStressActive || !sectionStressMemberId) return;
+
+  const member = members.find(m => m.id === sectionStressMemberId);
+  if (!member) { hideSectionStressView(); return; }
+
+  let mr = null;
+  if (analysisMode === 'frame' && frameResults) {
+    mr = frameResults.members.find(m => m.id === member.id);
+  } else if (analysisMode === 'truss' && hasResults) {
+    mr = {
+      id: member.id,
+      N1: member.axialForce,
+      N2: member.axialForce,
+      M1: 0, M2: 0, V1: 0, V2: 0,
+      q: 0
+    };
+  }
+
+  if (!mr) { hideSectionStressView(); return; }
+
+  const c = document.getElementById('section-stress-canvas');
+  const ctx = c.getContext('2d');
+  const W = c.width;
+  const H = c.height;
+  if (W <= 0 || H <= 0) return;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const L = member.length * 0.01;
+  const h = member.h;
+
+  const numLSeg = 60;
+  const numHSeg = 30;
+  const field = computeMemberStressField(member, mr, numLSeg, numHSeg);
+
+  let maxAbsStress = 0;
+  for (const row of field) {
+    for (const s of row) {
+      if (Math.abs(s) > maxAbsStress) maxAbsStress = Math.abs(s);
+    }
+  }
+  if (maxAbsStress < 1e-3) maxAbsStress = 1;
+
+  const margin = { left: 55, right: 20, top: 25, bottom: 35 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+
+  const zoom = sectionStressZoom;
+  const panX = sectionStressPanX;
+  const panY = sectionStressPanY;
+
+  const cellW = (plotW / numLSeg) * zoom;
+  const cellH = (plotH / numHSeg) * zoom;
+
+  const baseOffX = margin.left + panX;
+  const baseOffY = margin.top + panY;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(margin.left, margin.top, plotW, plotH);
+  ctx.clip();
+
+  for (let i = 0; i < numLSeg; i++) {
+    for (let j = 0; j < numHSeg; j++) {
+      const s0 = field[i][j];
+      const s1 = field[i + 1][j];
+      const s2 = field[i][j + 1];
+      const s3 = field[i + 1][j + 1];
+      const avg = (s0 + s1 + s2 + s3) / 4;
+
+      const x = baseOffX + i * cellW;
+      const y = baseOffY + j * cellH;
+
+      ctx.fillStyle = getSectionStressColor(avg, maxAbsStress);
+      ctx.fillRect(x, y, cellW + 0.5, cellH + 0.5);
+
+      if (Math.abs(avg) > YIELD_STRESS) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, cellW + 0.5, cellH + 0.5);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(255,235,59,0.7)';
+        ctx.lineWidth = 1;
+        const stripeW = 5;
+        for (let d = -Math.max(cellW, cellH) * 2; d < Math.max(cellW, cellH) * 2; d += stripeW * 2) {
+          ctx.beginPath();
+          ctx.moveTo(x + d, y);
+          ctx.lineTo(x + d + cellH, y + cellH);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+  }
+
+  ctx.restore();
+
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(
+    baseOffX,
+    baseOffY,
+    numLSeg * cellW,
+    numHSeg * cellH
+  );
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 0.5;
+  ctx.setLineDash([4, 4]);
+  const neutralY = baseOffY + (numHSeg / 2) * cellH;
+  if (neutralY > margin.top && neutralY < margin.top + plotH) {
+    ctx.beginPath();
+    ctx.moveTo(baseOffX, neutralY);
+    ctx.lineTo(baseOffX + numLSeg * cellW, neutralY);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = '#b0bec5';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'center';
+
+  for (let i = 0; i <= 5; i++) {
+    const t = i / 5;
+    const x = baseOffX + t * numLSeg * cellW;
+    if (x >= margin.left && x <= margin.left + plotW) {
+      const val = (t * L).toFixed(2);
+      ctx.fillText(`${val}`, x, margin.top + plotH + 12);
+    }
+  }
+
+  ctx.textAlign = 'right';
+  for (let j = 0; j <= 4; j++) {
+    const s = j / 4;
+    const y = baseOffY + s * numHSeg * cellH;
+    if (y >= margin.top && y <= margin.top + plotH) {
+      const yVal = (h / 2 - s * h) * 1000;
+      ctx.fillText(`${yVal.toFixed(0)}`, margin.left - 5, y + 3);
+    }
+  }
+
+  ctx.fillStyle = '#78909c';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('x (m)', margin.left + plotW / 2, H - 4);
+
+  ctx.save();
+  ctx.translate(10, margin.top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('y (mm)', 0, 0);
+  ctx.restore();
+
+  document.getElementById('colorbar-label-max').textContent =
+    `+${(maxAbsStress / 1e6).toFixed(1)} MPa`;
+  document.getElementById('colorbar-label-min').textContent =
+    `-${(maxAbsStress / 1e6).toFixed(1)} MPa`;
+}
+
+function updateSectionStressTooltip(e) {
+  if (!sectionStressActive || !sectionStressMemberId) return;
+
+  const member = members.find(m => m.id === sectionStressMemberId);
+  if (!member) return;
+
+  let mr = null;
+  if (analysisMode === 'frame' && frameResults) {
+    mr = frameResults.members.find(m => m.id === member.id);
+  } else if (analysisMode === 'truss' && hasResults) {
+    mr = {
+      id: member.id,
+      N1: member.axialForce, N2: member.axialForce,
+      M1: 0, M2: 0, V1: 0, V2: 0, q: 0
+    };
+  }
+  if (!mr) return;
+
+  const c = document.getElementById('section-stress-canvas');
+  const rect = c.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const W = c.width;
+  const H = c.height;
+  const margin = { left: 55, right: 20, top: 25, bottom: 35 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+
+  if (mx < margin.left || mx > margin.left + plotW || my < margin.top || my > margin.top + plotH) {
+    document.getElementById('section-stress-tooltip').classList.add('hidden');
+    return;
+  }
+
+  const L = member.length * 0.01;
+  const h = member.h;
+  const numLSeg = 60;
+  const numHSeg = 30;
+  const zoom = sectionStressZoom;
+  const cellW = (plotW / numLSeg) * zoom;
+  const cellH = (plotH / numHSeg) * zoom;
+
+  const plotMX = mx - margin.left - sectionStressPanX;
+  const plotMY = my - margin.top - sectionStressPanY;
+
+  const ti = plotMX / cellW;
+  const tj = plotMY / cellH;
+
+  if (ti < 0 || ti > numLSeg || tj < 0 || tj > numHSeg) {
+    document.getElementById('section-stress-tooltip').classList.add('hidden');
+    return;
+  }
+
+  const t = ti / numLSeg;
+  const s = tj / numHSeg;
+  const x = t * L;
+  const y = h / 2 - s * h;
+
+  const q = mr.q || 0;
+  let M, N;
+  if (Math.abs(q) > 1e-10) {
+    M = mr.M1 * (1 - t) + mr.M2 * t + q * x * (L - x) / 2;
+  } else {
+    M = mr.M1 * (1 - t) + mr.M2 * t;
+  }
+  N = mr.N1 * (1 - t) + mr.N2 * t;
+
+  const sigmaAxial = N / member.A;
+  const sigmaBending = member.I > 0 ? M * y / member.I : 0;
+  const sigma = sigmaAxial + sigmaBending;
+
+  const tooltip = document.getElementById('section-stress-tooltip');
+  const panel = document.getElementById('section-stress-panel');
+  const panelRect = panel.getBoundingClientRect();
+  const tipX = e.clientX - panelRect.left + 15;
+  const tipY = e.clientY - panelRect.top + 15;
+
+  const isYielding = Math.abs(sigma) > YIELD_STRESS;
+
+  let html = `<strong>x=${x.toFixed(3)}m  y=${(y * 1000).toFixed(1)}mm</strong><br/>`;
+  html += `σ = ${(sigma / 1e6).toFixed(2)} MPa<br/>`;
+  html += `<small>σ轴力=${(sigmaAxial / 1e6).toFixed(2)}  σ弯矩=${(sigmaBending / 1e6).toFixed(2)}</small><br/>`;
+  html += `<small>距中性轴=${(y * 1000).toFixed(1)}mm</small>`;
+  if (isYielding) {
+    html += `<br/><span style="color:#ffc107;font-weight:bold;">⚠ 超过屈服强度 ${YIELD_STRESS / 1e6} MPa</span>`;
+  }
+
+  tooltip.innerHTML = html;
+  tooltip.style.left = tipX + 'px';
+  tooltip.style.top = tipY + 'px';
+  tooltip.classList.remove('hidden');
 }
 
 function calcFrameMaxStress(rm, member) {

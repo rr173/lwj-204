@@ -1175,3 +1175,115 @@ body {
   background: #bf360c;
   border-color: #bf360c;
 }
+
+.section-stress-panel {
+  position: absolute;
+  bottom: 10px;
+  right: 250px;
+  width: 420px;
+  height: 280px;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  overflow: hidden;
+}
+
+.section-stress-panel.hidden {
+  display: none;
+}
+
+.section-stress-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #263238;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.section-stress-title {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.section-stress-member-label {
+  font-size: 11px;
+  color: #80cbc4;
+  flex: 1;
+  text-align: center;
+  font-weight: 600;
+}
+
+.section-stress-close {
+  color: #fff !important;
+  background: transparent !important;
+  border: none !important;
+  font-size: 18px !important;
+  line-height: 1;
+  padding: 0 4px !important;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.section-stress-close:hover {
+  opacity: 1;
+}
+
+#section-stress-canvas {
+  flex: 1;
+  display: block;
+  background: #1a1a2e;
+  cursor: crosshair;
+}
+
+.section-stress-tooltip {
+  position: absolute;
+  background: rgba(0,0,0,0.88);
+  color: #fff;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 210;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.section-stress-tooltip.hidden {
+  display: none;
+}
+
+.section-stress-colorbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 6px;
+  background: #263238;
+  flex-shrink: 0;
+}
+
+.section-stress-colorbar-gradient {
+  flex: 1;
+  height: 12px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #1565c0, #64b5f6, #e0e0e0, #ef9a9a, #c62828);
+}
+
+.section-stress-colorbar-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.colorbar-label {
+  font-size: 9px;
+  color: #b0bec5;
+  font-family: 'Menlo', 'Consolas', monospace;
+}

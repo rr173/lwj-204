@@ -58,6 +58,23 @@
         <input type="range" id="timeline-slider" class="timeline-slider" min="0" max="0" value="0" step="1" />
         <span id="timeline-stage-name" class="timeline-stage-name"></span>
       </div>
+      <div id="section-stress-panel" class="section-stress-panel hidden">
+        <div class="section-stress-header">
+          <span class="section-stress-title">截面应力云图</span>
+          <span id="section-stress-member-label" class="section-stress-member-label"></span>
+          <button id="btn-section-stress-close" class="btn btn-small section-stress-close">×</button>
+        </div>
+        <canvas id="section-stress-canvas"></canvas>
+        <div id="section-stress-tooltip" class="section-stress-tooltip hidden"></div>
+        <div class="section-stress-colorbar">
+          <div id="section-stress-colorbar-gradient" class="section-stress-colorbar-gradient"></div>
+          <div class="section-stress-colorbar-labels">
+            <span id="colorbar-label-max" class="colorbar-label"></span>
+            <span class="colorbar-label">0</span>
+            <span id="colorbar-label-min" class="colorbar-label"></span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div id="influence-panel" class="influence-panel hidden">
@@ -166,6 +183,14 @@
           <span class="legend-line" style="border-top: 2px dashed rgba(156,39,176,0.4);"></span>
           <span>振型包络</span>
         </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: linear-gradient(to right, #1565c0, #e0e0e0, #c62828);"></span>
+          <span>截面应力云图</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: repeating-linear-gradient(45deg, #ffc107, #ffc107 3px, transparent 3px, transparent 6px);"></span>
+          <span>屈服警告区</span>
+        </div>
       </div>
       <div class="panel-section">
         <h3>操作说明</h3>
@@ -178,6 +203,7 @@
           <li>拖拽移动节点</li>
           <li>框选后按Delete删除</li>
           <li>Ctrl+Z撤销, Ctrl+Y重做</li>
+          <li>选中杆件后右下角弹出截面应力云图</li>
         </ul>
       </div>
       <div class="panel-section" id="results-section">
