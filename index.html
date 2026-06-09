@@ -18,6 +18,7 @@
         <button id="btn-solve-all" class="btn btn-primary">全部求解</button>
         <button id="btn-modal" class="btn btn-modal">模态分析</button>
         <button id="btn-influence" class="btn btn-influence">影响线</button>
+        <button id="btn-construction" class="btn btn-construction">施工阶段</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -52,6 +53,11 @@
       </div>
       <div id="tooltip" class="tooltip hidden"></div>
       <div id="status-bar" class="status-bar"></div>
+      <div id="timeline-container" class="timeline-container hidden">
+        <span class="timeline-label">施工阶段:</span>
+        <input type="range" id="timeline-slider" class="timeline-slider" min="0" max="0" value="0" step="1" />
+        <span id="timeline-stage-name" class="timeline-stage-name"></span>
+      </div>
     </div>
 
     <div id="influence-panel" class="influence-panel hidden">
@@ -74,6 +80,12 @@
     </div>
     
     <div class="info-panel">
+      <div class="panel-tabs">
+        <div class="panel-tab active" data-tab="general">工况管理</div>
+        <div class="panel-tab" data-tab="construction">施工阶段</div>
+      </div>
+
+      <div id="tab-general" class="tab-content active">
       <div class="panel-section">
         <h3>工况管理</h3>
         <div class="loadcase-header">
@@ -86,6 +98,24 @@
         <div id="envelope-summary"></div>
         <div id="overlimit-list"></div>
       </div>
+      </div>
+
+      <div id="tab-construction" class="tab-content">
+      <div class="panel-section">
+        <h3>施工阶段</h3>
+        <div class="stage-actions">
+          <button id="btn-add-stage" class="btn btn-small">+ 新增阶段</button>
+          <button id="btn-solve-stages" class="btn btn-small btn-primary">阶段求解</button>
+        </div>
+        <div id="stage-list" class="stage-list"></div>
+        <div id="stage-detail" class="stage-detail" style="display:none;"></div>
+      </div>
+      <div class="panel-section" id="stage-results-section" style="display:none;">
+        <h3>阶段求解结果</h3>
+        <div id="stage-results-content"></div>
+      </div>
+      </div>
+
       <div class="panel-section">
         <h3>图例</h3>
         <div class="legend-item">

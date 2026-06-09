@@ -896,3 +896,282 @@ body {
   background: #fafafa;
   cursor: crosshair;
 }
+
+.panel-tabs {
+  display: flex;
+  border-bottom: 2px solid #e0e0e0;
+  margin-bottom: 12px;
+}
+
+.panel-tab {
+  flex: 1;
+  padding: 8px 4px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  color: #666;
+  transition: all 0.2s;
+}
+
+.panel-tab:hover {
+  color: #333;
+  background: #f5f5f5;
+}
+
+.panel-tab.active {
+  color: #1565c0;
+  border-bottom-color: #1565c0;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+.stage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.stage-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.stage-item:hover {
+  background: #e8e8e8;
+}
+
+.stage-item.active {
+  background: #e3f2fd;
+  border-color: #1976d2;
+}
+
+.stage-item.solved .stage-status {
+  color: #4caf50;
+}
+
+.stage-item.unsolved .stage-status {
+  color: #999;
+}
+
+.stage-drag-handle {
+  cursor: grab;
+  color: #999;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.stage-drag-handle:active {
+  cursor: grabbing;
+}
+
+.stage-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.stage-status {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.stage-delete {
+  color: #999;
+  font-size: 14px;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.stage-delete:hover {
+  color: #e53935;
+  background: #ffebee;
+}
+
+.stage-item.dragging {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.stage-item.drag-over {
+  border-top: 2px solid #1976d2;
+}
+
+.stage-detail {
+  margin-top: 10px;
+  padding: 8px;
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.stage-detail h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 6px;
+}
+
+.stage-member-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 100px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.stage-member-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.stage-member-check.disabled {
+  color: #bbb;
+  pointer-events: none;
+}
+
+.stage-member-check input[type="checkbox"] {
+  margin: 0;
+}
+
+.stage-load-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+}
+
+.stage-load-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.stage-load-item input {
+  width: 60px;
+  padding: 2px 4px;
+  font-size: 11px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.stage-load-item select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.stage-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.timeline-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 240px;
+  height: 44px;
+  background: #fff;
+  border-top: 1px solid #e0e0e0;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 10px;
+  z-index: 100;
+}
+
+.timeline-container.hidden {
+  display: none;
+}
+
+.timeline-label {
+  font-size: 11px;
+  color: #666;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.timeline-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: #e0e0e0;
+  border-radius: 3px;
+  outline: none;
+}
+
+.timeline-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #1976d2;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.timeline-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #1976d2;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.timeline-stage-name {
+  font-size: 11px;
+  color: #1976d2;
+  font-weight: 600;
+  min-width: 60px;
+  text-align: right;
+}
+
+.btn-construction {
+  background: #e65100;
+  color: #fff;
+  border-color: #e65100;
+}
+
+.btn-construction:hover {
+  background: #bf360c;
+  border-color: #bf360c;
+}
+
+.btn-construction.active {
+  background: #bf360c;
+  border-color: #bf360c;
+}

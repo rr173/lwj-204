@@ -25,6 +25,7 @@ export class Renderer {
     this.influenceSectionT = 0.5;
     this.influenceForcePosition = null;
     this.influenceResponseValue = null;
+    this.constructionStageInfo = null;
   }
 
   resize() {
@@ -61,6 +62,28 @@ export class Renderer {
     const node1 = nodeMap.get(member.node1Id);
     const node2 = nodeMap.get(member.node2Id);
     if (!node1 || !node2) return;
+
+    if (this.constructionStageInfo) {
+      const isActive = this.constructionStageInfo.activeMemberIds.has(member.id);
+      if (!isActive) {
+        this.ctx.strokeStyle = '#ccc';
+        this.ctx.lineWidth = 2;
+        this.ctx.setLineDash([6, 4]);
+        this.ctx.beginPath();
+        this.ctx.moveTo(node1.x, node1.y);
+        this.ctx.lineTo(node2.x, node2.y);
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+
+        this.ctx.font = '10px sans-serif';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillStyle = '#bbb';
+        const mx = (node1.x + node2.x) / 2;
+        const my = (node1.y + node2.y) / 2;
+        this.ctx.fillText(`#${member.id}`, mx, my - 6);
+        return;
+      }
+    }
 
     let color = '#333';
     let isOverLimit = false;
@@ -460,6 +483,26 @@ export class Renderer {
   }
 
   drawNode(node) {
+    if (this.constructionStageInfo) {
+      const activeNodeIds = new Set();
+      this._membersRef.forEach(m => {
+        if (this.constructionStageInfo.activeMemberIds.has(m.id)) {
+          activeNodeIds.add(m.node1Id);
+          activeNodeIds.add(m.node2Id);
+        }
+      });
+      if (!activeNodeIds.has(node.id)) {
+        this.ctx.fillStyle = '#e0e0e0';
+        this.ctx.strokeStyle = '#ccc';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.arc(node.x, node.y, 6, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.stroke();
+        return;
+      }
+    }
+
     this.ctx.fillStyle = node.selected ? '#ff9800' : '#fff';
     this.ctx.strokeStyle = '#333';
     this.ctx.lineWidth = 2;

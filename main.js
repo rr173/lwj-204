@@ -4,7 +4,7 @@ import { createNode, createMember, deepClone } from './src/core.js';
 import { solveTruss, solveFrame } from './src/solver.js';
 import { solveModal } from './src/modal.js';
 import { HistoryManager } from './src/history.js';
-import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases } from './src/presets.js';
+import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases, createConstructionStagePreset } from './src/presets.js';
 
 const canvas = document.getElementById('canvas');
 const renderer = new Renderer(canvas);
@@ -47,6 +47,11 @@ let loadCases = [];
 let currentLoadCaseId = null;
 let viewMode = 'single';
 let envelopeData = null;
+
+let constructionActive = false;
+let constructionStages = [];
+let currentStageIndex = -1;
+let stageDragSrcIndex = null;
 
 let mouseState = {
   isDown: false,
@@ -724,7 +729,8 @@ function saveToStorage() {
       })),
       loadCases: loadCases,
       currentLoadCaseId,
-      analysisMode
+      analysisMode,
+      constructionStages
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
@@ -769,6 +775,7 @@ function loadFromStorage() {
     currentLoadCaseId = data.currentLoadCaseId || loadCases[0].id;
     analysisMode = data.analysisMode || 'truss';
     renderer.analysisMode = analysisMode;
+    constructionStages = data.constructionStages || [];
 
     applyLoadCaseToNodes(getCurrentLoadCase());
 
@@ -781,6 +788,617 @@ function loadFromStorage() {
   } catch (e) {
     console.warn('从localStorage加载失败:', e);
     return false;
+  }
+}
+
+function getStageCumulativeMemberIds(stageIndex) {
+  const ids = new Set();
+  for (let i = 0; i <= stageIndex && i < constructionStages.length; i++) {
+    constructionStages[i].memberIds.forEach(id => ids.add(id));
+  }
+  return ids;
+}
+
+function getStageAvailableMemberIds(stageIndex) {
+  return getStageCumulativeMemberIds(stageIndex);
+}
+
+function addConstructionStage(name) {
+  if (!name || !name.trim()) return;
+  const stage = {
+    id: 'cs_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+    name: name.trim(),
+    memberIds: [],
+    nodeLoads: {},
+    memberLoads: {},
+    solved: false,
+    incrementalResults: null
+  };
+  constructionStages.push(stage);
+  currentStageIndex = constructionStages.length - 1;
+  updateStageList();
+  updateStageDetail();
+  updateTimeline();
+  saveToStorage();
+}
+
+function deleteConstructionStage(stageId) {
+  const idx = constructionStages.findIndex(s => s.id === stageId);
+  if (idx < 0) return;
+  constructionStages.splice(idx, 1);
+  if (constructionStages.length === 0) {
+    currentStageIndex = -1;
+    exitConstructionMode();
+  } else {
+    if (currentStageIndex >= constructionStages.length) {
+      currentStageIndex = constructionStages.length - 1;
+    }
+    constructionStages.forEach(s => { s.solved = false; s.incrementalResults = null; });
+    updateStageList();
+    updateStageDetail();
+    updateTimeline();
+    applyStageVisualization();
+  }
+  saveToStorage();
+}
+
+function renameConstructionStage(stageId, newName) {
+  const stage = constructionStages.find(s => s.id === stageId);
+  if (stage) {
+    stage.name = newName;
+    updateStageList();
+    saveToStorage();
+  }
+}
+
+function moveConstructionStage(fromIdx, toIdx) {
+  if (fromIdx === toIdx) return;
+  if (fromIdx < 0 || fromIdx >= constructionStages.length) return;
+  if (toIdx < 0 || toIdx >= constructionStages.length) return;
+  const [stage] = constructionStages.splice(fromIdx, 1);
+  constructionStages.splice(toIdx, 0, stage);
+  constructionStages.forEach(s => { s.solved = false; s.incrementalResults = null; });
+  if (currentStageIndex === fromIdx) currentStageIndex = toIdx;
+  updateStageList();
+  updateStageDetail();
+  updateTimeline();
+  saveToStorage();
+}
+
+function toggleStageMember(stageId, memberId) {
+  const stage = constructionStages.find(s => s.id === stageId);
+  if (!stage) return;
+  const idx = stage.memberIds.indexOf(memberId);
+  if (idx >= 0) {
+    stage.memberIds.splice(idx, 1);
+  } else {
+    stage.memberIds.push(memberId);
+  }
+  constructionStages.forEach(s => { s.solved = false; s.incrementalResults = null; });
+  updateStageDetail();
+  updateStageList();
+  saveToStorage();
+}
+
+function setStageNodeLoad(stageId, nodeId, fx, fy, m) {
+  const stage = constructionStages.find(s => s.id === stageId);
+  if (!stage) return;
+  if (!stage.nodeLoads) stage.nodeLoads = {};
+  stage.nodeLoads[nodeId] = { fx: fx || 0, fy: fy || 0, m: m || 0 };
+  stage.solved = false;
+  stage.incrementalResults = null;
+  saveToStorage();
+}
+
+function setStageMemberLoad(stageId, memberId, q) {
+  const stage = constructionStages.find(s => s.id === stageId);
+  if (!stage) return;
+  if (!stage.memberLoads) stage.memberLoads = {};
+  stage.memberLoads[memberId] = { q: q || 0 };
+  stage.solved = false;
+  stage.incrementalResults = null;
+  saveToStorage();
+}
+
+function solveConstructionStages() {
+  if (constructionStages.length === 0) {
+    alert('请先创建施工阶段');
+    return;
+  }
+
+  const savedFx = {};
+  const savedFy = {};
+  const savedM = {};
+  const savedQ = {};
+  nodes.forEach(n => { savedFx[n.id] = n.fx; savedFy[n.id] = n.fy; savedM[n.id] = n.m; });
+  members.forEach(m => { savedQ[m.id] = m.q; });
+
+  let successCount = 0;
+  let failCount = 0;
+
+  for (let i = 0; i < constructionStages.length; i++) {
+    const stage = constructionStages[i];
+    const cumulativeIds = getStageCumulativeMemberIds(i);
+    const subMembers = members.filter(m => cumulativeIds.has(m.id));
+
+    const usedNodeIds = new Set();
+    subMembers.forEach(m => { usedNodeIds.add(m.node1Id); usedNodeIds.add(m.node2Id); });
+    const subNodes = nodes.filter(n => usedNodeIds.has(n.id));
+
+    if (subMembers.length === 0 || subNodes.length === 0) {
+      stage.solved = false;
+      stage.incrementalResults = null;
+      failCount++;
+      continue;
+    }
+
+    nodes.forEach(n => { n.fx = 0; n.fy = 0; n.m = 0; });
+    members.forEach(m => { m.q = 0; });
+
+    if (stage.nodeLoads) {
+      for (const nodeId in stage.nodeLoads) {
+        const node = nodes.find(n => n.id === parseInt(nodeId));
+        if (node && usedNodeIds.has(node.id)) {
+          node.fx = stage.nodeLoads[nodeId].fx || 0;
+          node.fy = stage.nodeLoads[nodeId].fy || 0;
+          node.m = stage.nodeLoads[nodeId].m || 0;
+        }
+      }
+    }
+
+    if (analysisMode === 'frame' && stage.memberLoads) {
+      for (const memberId in stage.memberLoads) {
+        const member = members.find(m => m.id === parseInt(memberId));
+        if (member && cumulativeIds.has(member.id)) {
+          member.q = stage.memberLoads[memberId].q || 0;
+        }
+      }
+    }
+
+    try {
+      let result;
+      if (analysisMode === 'frame') {
+        result = solveFrame(subNodes, subMembers);
+      } else {
+        result = solveTruss(subNodes, subMembers);
+      }
+      stage.solved = true;
+      stage.incrementalResults = deepClone(result);
+      successCount++;
+    } catch (e) {
+      stage.solved = false;
+      stage.incrementalResults = null;
+      failCount++;
+    }
+  }
+
+  nodes.forEach(n => { n.fx = savedFx[n.id]; n.fy = savedFy[n.id]; n.m = savedM[n.id]; });
+  members.forEach(m => { m.q = savedQ[m.id]; });
+
+  const lc = getCurrentLoadCase();
+  if (lc && lc.solved && lc.results) {
+    restoreResults(lc.results);
+  } else {
+    hasResults = false;
+    renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
+  }
+
+  applyStageVisualization();
+  updateStageList();
+  updateStageResults();
+  updateTimeline();
+  saveToStorage();
+  updateStatus(`阶段求解完成: 成功 ${successCount} 个, 失败 ${failCount} 个`);
+}
+
+function getCumulativeStageResults(stageIndex) {
+  if (stageIndex < 0 || stageIndex >= constructionStages.length) return null;
+
+  const cumulativeNodeDisplacements = {};
+  const cumulativeMemberForces = {};
+
+  for (let i = 0; i <= stageIndex; i++) {
+    const stage = constructionStages[i];
+    if (!stage.solved || !stage.incrementalResults) return null;
+
+    stage.incrementalResults.nodes.forEach(rn => {
+      if (!cumulativeNodeDisplacements[rn.id]) {
+        cumulativeNodeDisplacements[rn.id] = { dx: 0, dy: 0, dtheta: 0 };
+      }
+      cumulativeNodeDisplacements[rn.id].dx += rn.dx || 0;
+      cumulativeNodeDisplacements[rn.id].dy += rn.dy || 0;
+      cumulativeNodeDisplacements[rn.id].dtheta += rn.dtheta || 0;
+    });
+
+    stage.incrementalResults.members.forEach(rm => {
+      if (!cumulativeMemberForces[rm.id]) {
+        cumulativeMemberForces[rm.id] = { axialForce: 0, stress: 0, N1: 0, V1: 0, M1: 0, N2: 0, V2: 0, M2: 0, q: 0 };
+      }
+      cumulativeMemberForces[rm.id].axialForce += rm.axialForce || 0;
+      cumulativeMemberForces[rm.id].stress += rm.stress || 0;
+      cumulativeMemberForces[rm.id].N1 += rm.N1 || 0;
+      cumulativeMemberForces[rm.id].V1 += rm.V1 || 0;
+      cumulativeMemberForces[rm.id].M1 += rm.M1 || 0;
+      cumulativeMemberForces[rm.id].N2 += rm.N2 || 0;
+      cumulativeMemberForces[rm.id].V2 += rm.V2 || 0;
+      cumulativeMemberForces[rm.id].M2 += rm.M2 || 0;
+    });
+  }
+
+  return { cumulativeNodeDisplacements, cumulativeMemberForces };
+}
+
+function applyStageVisualization() {
+  if (!constructionActive || currentStageIndex < 0) {
+    renderer.constructionStageInfo = null;
+    return;
+  }
+
+  const cumulativeIds = getStageCumulativeMemberIds(currentStageIndex);
+  const allSolvedUpToCurrent = constructionStages.slice(0, currentStageIndex + 1).every(s => s.solved);
+
+  const cumulative = allSolvedUpToCurrent ? getCumulativeStageResults(currentStageIndex) : null;
+
+  if (cumulative) {
+    nodes.forEach(n => {
+      const cd = cumulative.cumulativeNodeDisplacements[n.id];
+      if (cd) {
+        n.dx = cd.dx;
+        n.dy = cd.dy;
+        n.dtheta = cd.dtheta;
+      } else {
+        n.dx = 0;
+        n.dy = 0;
+        n.dtheta = 0;
+      }
+    });
+
+    members.forEach(m => {
+      const cf = cumulative.cumulativeMemberForces[m.id];
+      if (cf) {
+        m.axialForce = cf.axialForce;
+        m.stress = cf.stress;
+      } else {
+        m.axialForce = 0;
+        m.stress = 0;
+      }
+    });
+
+    if (analysisMode === 'frame') {
+      const memberResults = [];
+      let maxForce = 0;
+      let maxMoment = 0;
+      members.forEach(m => {
+        const cf = cumulative.cumulativeMemberForces[m.id];
+        if (cf && cumulativeIds.has(m.id)) {
+          memberResults.push({
+            id: m.id,
+            axialForce: cf.axialForce,
+            stress: cf.stress,
+            N1: cf.N1, V1: cf.V1, M1: cf.M1,
+            N2: cf.N2, V2: cf.V2, M2: cf.M2,
+            q: cf.q
+          });
+          maxForce = Math.max(maxForce, Math.abs(cf.N1), Math.abs(cf.N2), Math.abs(cf.V1), Math.abs(cf.V2));
+          maxMoment = Math.max(maxMoment, Math.abs(cf.M1), Math.abs(cf.M2));
+        } else {
+          memberResults.push({
+            id: m.id, axialForce: 0, stress: 0,
+            N1: 0, V1: 0, M1: 0, N2: 0, V2: 0, M2: 0, q: 0
+          });
+        }
+      });
+      frameResults = { nodes: [], members: memberResults, maxForce, maxMoment };
+      renderer.frameResults = frameResults;
+      renderer.maxForce = maxForce;
+      renderer.maxMoment = maxMoment;
+    }
+
+    hasResults = true;
+    renderer.hasResults = true;
+    let globalMaxForce = 0;
+    members.forEach(m => {
+      if (cumulativeIds.has(m.id)) {
+        globalMaxForce = Math.max(globalMaxForce, Math.abs(m.axialForce));
+      }
+    });
+    maxForce = globalMaxForce;
+    renderer.maxForce = maxForce;
+  } else {
+    nodes.forEach(n => { n.dx = 0; n.dy = 0; n.dtheta = 0; });
+    members.forEach(m => { m.axialForce = 0; m.stress = 0; });
+    hasResults = false;
+    renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
+  }
+
+  renderer.constructionStageInfo = {
+    activeMemberIds: cumulativeIds,
+    currentStageIndex
+  };
+}
+
+function enterConstructionMode() {
+  if (modalActive) exitModalMode();
+  if (influenceActive) exitInfluenceMode();
+  constructionActive = true;
+  document.getElementById('btn-construction').classList.add('active');
+  document.getElementById('timeline-container').classList.remove('hidden');
+  if (constructionStages.length > 0 && currentStageIndex < 0) {
+    currentStageIndex = 0;
+  }
+  applyStageVisualization();
+  updateStageList();
+  updateStageDetail();
+  updateTimeline();
+  render();
+  updateResultsDisplay();
+}
+
+function exitConstructionMode() {
+  constructionActive = false;
+  currentStageIndex = -1;
+  renderer.constructionStageInfo = null;
+  document.getElementById('btn-construction').classList.remove('active');
+  document.getElementById('timeline-container').classList.add('hidden');
+
+  const lc = getCurrentLoadCase();
+  if (lc && lc.solved && lc.results) {
+    restoreResults(lc.results);
+  } else {
+    hasResults = false;
+    renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
+    nodes.forEach(n => { n.dx = 0; n.dy = 0; n.dtheta = 0; });
+    members.forEach(m => { m.axialForce = 0; m.stress = 0; });
+  }
+  render();
+  updateResultsDisplay();
+}
+
+function updateStageList() {
+  const container = document.getElementById('stage-list');
+  container.innerHTML = '';
+
+  constructionStages.forEach((stage, idx) => {
+    const item = document.createElement('div');
+    item.className = 'stage-item' +
+      (idx === currentStageIndex ? ' active' : '') +
+      (stage.solved ? ' solved' : ' unsolved');
+    item.draggable = true;
+    item.dataset.index = idx;
+
+    const handle = document.createElement('span');
+    handle.className = 'stage-drag-handle';
+    handle.textContent = '⠿';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'stage-name';
+    nameSpan.textContent = stage.name;
+    nameSpan.ondblclick = (e) => {
+      e.stopPropagation();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = stage.name;
+      nameSpan.innerHTML = '';
+      nameSpan.appendChild(input);
+      input.focus();
+      input.select();
+      input.onblur = () => {
+        const newName = input.value.trim() || stage.name;
+        renameConstructionStage(stage.id, newName);
+      };
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') input.blur();
+        if (e.key === 'Escape') { nameSpan.textContent = stage.name; }
+      };
+    };
+
+    const statusSpan = document.createElement('span');
+    statusSpan.className = 'stage-status';
+    statusSpan.textContent = stage.solved ? '✓' : '—';
+
+    const deleteBtn = document.createElement('span');
+    deleteBtn.className = 'stage-delete';
+    deleteBtn.textContent = '×';
+    deleteBtn.title = '删除阶段';
+    deleteBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (confirm(`确定删除阶段"${stage.name}"吗？`)) {
+        deleteConstructionStage(stage.id);
+      }
+    };
+
+    item.onclick = () => {
+      currentStageIndex = idx;
+      applyStageVisualization();
+      updateStageList();
+      updateStageDetail();
+      updateTimeline();
+      render();
+      updateStageResults();
+    };
+
+    item.ondragstart = (e) => {
+      stageDragSrcIndex = idx;
+      e.dataTransfer.effectAllowed = 'move';
+      item.classList.add('dragging');
+    };
+
+    item.ondragend = () => {
+      item.classList.remove('dragging');
+      stageDragSrcIndex = null;
+      container.querySelectorAll('.stage-item').forEach(el => el.classList.remove('drag-over'));
+    };
+
+    item.ondragover = (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      item.classList.add('drag-over');
+    };
+
+    item.ondragleave = () => {
+      item.classList.remove('drag-over');
+    };
+
+    item.ondrop = (e) => {
+      e.preventDefault();
+      item.classList.remove('drag-over');
+      const toIdx = parseInt(item.dataset.index);
+      if (stageDragSrcIndex !== null && stageDragSrcIndex !== toIdx) {
+        moveConstructionStage(stageDragSrcIndex, toIdx);
+      }
+    };
+
+    item.appendChild(handle);
+    item.appendChild(nameSpan);
+    item.appendChild(statusSpan);
+    item.appendChild(deleteBtn);
+    container.appendChild(item);
+  });
+}
+
+function updateStageDetail() {
+  const container = document.getElementById('stage-detail');
+  if (currentStageIndex < 0 || currentStageIndex >= constructionStages.length) {
+    container.style.display = 'none';
+    return;
+  }
+
+  const stage = constructionStages[currentStageIndex];
+  container.style.display = 'block';
+
+  const usedNodeIds = new Set();
+  stage.memberIds.forEach(mid => {
+    const member = members.find(m => m.id === mid);
+    if (member) {
+      usedNodeIds.add(member.node1Id);
+      usedNodeIds.add(member.node2Id);
+    }
+  });
+
+  let html = `<h4>阶段: ${stage.name}</h4>`;
+
+  html += '<h4>本阶段新增杆件</h4>';
+  html += '<div class="stage-member-checks">';
+  members.forEach(m => {
+    const isChecked = stage.memberIds.includes(m.id);
+    const cumulativeIds = getStageCumulativeMemberIds(currentStageIndex);
+    const isAvailable = true;
+    html += `<label class="stage-member-check${isAvailable ? '' : ' disabled'}">
+      <input type="checkbox" ${isChecked ? 'checked' : ''} ${isAvailable ? '' : 'disabled'}
+        onchange="window._toggleStageMember('${stage.id}', ${m.id})" />
+      杆件 #${m.id}
+    </label>`;
+  });
+  html += '</div>';
+
+  html += '<div class="stage-load-section">';
+  html += '<h4>本阶段荷载</h4>';
+
+  if (analysisMode === 'frame') {
+    html += '<h4 style="font-size:11px;color:#666;margin-top:4px;">杆件均布荷载</h4>';
+    stage.memberIds.forEach(mid => {
+      const ml = (stage.memberLoads && stage.memberLoads[mid]) || { q: 0 };
+      const member = members.find(m => m.id === mid);
+      if (member) {
+        html += `<div class="stage-load-item">
+          <span>杆件#${mid} q=</span>
+          <input type="number" value="${ml.q || 0}" step="1000"
+            onchange="window._setStageMemberLoad('${stage.id}', ${mid}, this.value)" />
+          <span>N/m</span>
+        </div>`;
+      }
+    });
+  }
+
+  html += '<h4 style="font-size:11px;color:#666;margin-top:6px;">节点力</h4>';
+  usedNodeIds.forEach(nid => {
+    const nl = (stage.nodeLoads && stage.nodeLoads[nid]) || { fx: 0, fy: 0, m: 0 };
+    html += `<div class="stage-load-item">
+      <span>节点#${nid}</span>
+      <span>Fx=</span>
+      <input type="number" value="${nl.fx || 0}" step="1000"
+        onchange="window._setStageNodeLoad('${stage.id}', ${nid}, 'fx', this.value)" />
+      <span>Fy=</span>
+      <input type="number" value="${nl.fy || 0}" step="1000"
+        onchange="window._setStageNodeLoad('${stage.id}', ${nid}, 'fy', this.value)" />
+      ${analysisMode === 'frame' ? `<span>M=</span><input type="number" value="${nl.m || 0}" step="100"
+        onchange="window._setStageNodeLoad('${stage.id}', ${nid}, 'm', this.value)" />` : ''}
+    </div>`;
+  });
+
+  html += '</div>';
+
+  container.innerHTML = html;
+}
+
+function updateStageResults() {
+  const section = document.getElementById('stage-results-section');
+  const container = document.getElementById('stage-results-content');
+
+  if (!constructionActive || currentStageIndex < 0 ||
+      !constructionStages[currentStageIndex].solved) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+  const stage = constructionStages[currentStageIndex];
+  const cumulative = getCumulativeStageResults(currentStageIndex);
+
+  let html = `<div style="font-size:12px;color:#1565c0;font-weight:600;margin-bottom:6px;">
+    阶段 ${currentStageIndex + 1}: ${stage.name} — 累积结果</div>`;
+
+  if (cumulative) {
+    html += '<div style="font-size:11px;color:#666;margin-bottom:4px;">节点累积位移</div>';
+    for (const nid in cumulative.cumulativeNodeDisplacements) {
+      const cd = cumulative.cumulativeNodeDisplacements[nid];
+      html += `<div class="result-item">节点#${nid}: dx=${(cd.dx * 1000).toFixed(4)}mm, dy=${(cd.dy * 1000).toFixed(4)}mm`;
+      if (analysisMode === 'frame') {
+        html += `, θ=${(cd.dtheta * 1000).toFixed(4)}mrad`;
+      }
+      html += '</div>';
+    }
+
+    if (analysisMode === 'frame') {
+      html += '<div style="font-size:11px;color:#666;margin-top:6px;margin-bottom:4px;">杆件累积内力</div>';
+      const cumulativeIds = getStageCumulativeMemberIds(currentStageIndex);
+      for (const mid in cumulative.cumulativeMemberForces) {
+        if (!cumulativeIds.has(parseInt(mid))) continue;
+        const cf = cumulative.cumulativeMemberForces[mid];
+        html += `<div class="result-item"><strong>杆件#${mid}</strong><br/>
+          1端: N=${(cf.N1 / 1000).toFixed(2)}kN, V=${(cf.V1 / 1000).toFixed(2)}kN, M=${(cf.M1 / 1000).toFixed(2)}kN·m<br/>
+          2端: N=${(cf.N2 / 1000).toFixed(2)}kN, V=${(cf.V2 / 1000).toFixed(2)}kN, M=${(cf.M2 / 1000).toFixed(2)}kN·m</div>`;
+      }
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+function updateTimeline() {
+  const slider = document.getElementById('timeline-slider');
+  const label = document.getElementById('timeline-stage-name');
+  const container = document.getElementById('timeline-container');
+
+  if (!constructionActive || constructionStages.length === 0) {
+    container.classList.add('hidden');
+    return;
+  }
+
+  container.classList.remove('hidden');
+  slider.max = constructionStages.length - 1;
+  slider.value = currentStageIndex >= 0 ? currentStageIndex : 0;
+
+  if (currentStageIndex >= 0 && currentStageIndex < constructionStages.length) {
+    label.textContent = constructionStages[currentStageIndex].name;
+  } else {
+    label.textContent = '';
   }
 }
 
@@ -811,6 +1429,8 @@ function init() {
     loadCases = createFrameLoadCases(nodes, members);
     currentLoadCaseId = loadCases[0].id;
     applyLoadCaseToNodes(getCurrentLoadCase());
+
+    constructionStages = createConstructionStagePreset(members);
 
     try {
       solveCurrentLoadCase();
@@ -1987,6 +2607,9 @@ document.getElementById('btn-clear').addEventListener('click', () => {
   if (confirm('确定要清空所有内容吗？')) {
     if (modalActive) exitModalMode();
     if (influenceActive) exitInfluenceMode();
+    if (constructionActive) exitConstructionMode();
+    constructionStages = [];
+    currentStageIndex = -1;
     nodes = [];
     members = [];
     loadCases = [createLoadCase('默认工况')];
@@ -2773,5 +3396,69 @@ function generateReport() {
   document.getElementById('report-content').innerHTML = html;
   document.getElementById('report-overlay').classList.remove('hidden');
 }
+
+window._toggleStageMember = function(stageId, memberId) {
+  toggleStageMember(stageId, memberId);
+};
+
+window._setStageNodeLoad = function(stageId, nodeId, dof, value) {
+  const stage = constructionStages.find(s => s.id === stageId);
+  if (!stage) return;
+  if (!stage.nodeLoads) stage.nodeLoads = {};
+  if (!stage.nodeLoads[nodeId]) stage.nodeLoads[nodeId] = { fx: 0, fy: 0, m: 0 };
+  stage.nodeLoads[nodeId][dof] = parseFloat(value) || 0;
+  stage.solved = false;
+  stage.incrementalResults = null;
+  saveToStorage();
+};
+
+window._setStageMemberLoad = function(stageId, memberId, value) {
+  setStageMemberLoad(stageId, memberId, parseFloat(value) || 0);
+};
+
+document.querySelectorAll('.panel-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    const tabName = tab.dataset.tab;
+    document.getElementById('tab-' + tabName).classList.add('active');
+  });
+});
+
+document.getElementById('btn-construction').addEventListener('click', () => {
+  if (constructionActive) {
+    exitConstructionMode();
+  } else {
+    enterConstructionMode();
+  }
+});
+
+document.getElementById('btn-add-stage').addEventListener('click', () => {
+  const name = prompt('请输入阶段名称:', `阶段${constructionStages.length + 1}`);
+  if (name && name.trim()) {
+    addConstructionStage(name.trim());
+    if (!constructionActive) {
+      enterConstructionMode();
+    }
+  }
+});
+
+document.getElementById('btn-solve-stages').addEventListener('click', () => {
+  solveConstructionStages();
+});
+
+document.getElementById('timeline-slider').addEventListener('input', (e) => {
+  const idx = parseInt(e.target.value);
+  if (idx >= 0 && idx < constructionStages.length) {
+    currentStageIndex = idx;
+    applyStageVisualization();
+    updateStageList();
+    updateStageDetail();
+    updateTimeline();
+    updateStageResults();
+    render();
+  }
+});
 
 init();

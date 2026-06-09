@@ -135,3 +135,47 @@ export function createFrameLoadCases(nodes, members) {
 
   return loadCases;
 }
+
+export function createConstructionStagePreset(members) {
+  const col1 = members.find(m => m.node1Id === 1 && m.node2Id === 2);
+  const beam = members.find(m => m.node1Id === 2 && m.node2Id === 3);
+  const col2 = members.find(m => m.node1Id === 3 && m.node2Id === 4);
+
+  const stages = [];
+
+  stages.push({
+    id: 'cs_preset_1',
+    name: '竖柱',
+    memberIds: [col1.id, col2.id],
+    nodeLoads: {},
+    memberLoads: {},
+    solved: false,
+    incrementalResults: null
+  });
+
+  stages.push({
+    id: 'cs_preset_2',
+    name: '架梁',
+    memberIds: [beam.id],
+    nodeLoads: {},
+    memberLoads: {},
+    solved: false,
+    incrementalResults: null
+  });
+
+  stages.push({
+    id: 'cs_preset_3',
+    name: '加均布荷载',
+    memberIds: [],
+    nodeLoads: {},
+    memberLoads: {},
+    solved: false,
+    incrementalResults: null
+  });
+
+  if (beam) {
+    stages[2].memberLoads[beam.id] = { q: 10000 };
+  }
+
+  return stages;
+}
