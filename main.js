@@ -213,6 +213,13 @@ function switchLoadCase(id) {
   updateLoadCaseList();
   render();
   updateResultsDisplay();
+  if (sectionStressActive) {
+    if (hasResults && frameResults) {
+      drawSectionStressCloud();
+    } else {
+      hideSectionStressView();
+    }
+  }
 }
 
 function restoreResults(results) {
@@ -453,6 +460,7 @@ function setAnalysisMode(mode) {
   if (analysisMode === mode) return;
   if (modalActive) exitModalMode();
   if (influenceActive) exitInfluenceMode();
+  if (sectionStressActive) hideSectionStressView();
   analysisMode = mode;
   renderer.analysisMode = mode;
 
@@ -1260,6 +1268,7 @@ function exitConstructionMode() {
   }
   render();
   updateResultsDisplay();
+  if (sectionStressActive) hideSectionStressView();
 }
 
 function updateStageList() {
@@ -3309,6 +3318,7 @@ function getSectionStressColor(stress, maxAbsStress) {
 
 function showSectionStressView(member) {
   if (!hasResults) return;
+  if (analysisMode !== 'frame') return;
   sectionStressActive = true;
   sectionStressMemberId = member.id;
   sectionStressZoom = 1;
@@ -3387,16 +3397,8 @@ function drawSectionStressCloud() {
   if (!member) { hideSectionStressView(); return; }
 
   let mr = null;
-  if (analysisMode === 'frame' && frameResults) {
+  if (frameResults) {
     mr = frameResults.members.find(m => m.id === member.id);
-  } else if (analysisMode === 'truss' && hasResults) {
-    mr = {
-      id: member.id,
-      N1: member.axialForce,
-      N2: member.axialForce,
-      M1: 0, M2: 0, V1: 0, V2: 0,
-      q: 0
-    };
   }
 
   if (!mr) { hideSectionStressView(); return; }
@@ -3546,14 +3548,8 @@ function updateSectionStressTooltip(e) {
   if (!member) return;
 
   let mr = null;
-  if (analysisMode === 'frame' && frameResults) {
+  if (frameResults) {
     mr = frameResults.members.find(m => m.id === member.id);
-  } else if (analysisMode === 'truss' && hasResults) {
-    mr = {
-      id: member.id,
-      N1: member.axialForce, N2: member.axialForce,
-      M1: 0, M2: 0, V1: 0, V2: 0, q: 0
-    };
   }
   if (!mr) return;
 
