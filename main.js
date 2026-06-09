@@ -1582,6 +1582,29 @@ function exitTopoMode() {
   render();
 }
 
+function restartTopoOptimization() {
+  stopTopoOptimization();
+  topoOptimizer = null;
+  topoRunning = false;
+
+  renderer.topoHoverDensity = null;
+
+  document.getElementById('topo-setup').style.display = 'block';
+  document.getElementById('topo-edge-config').style.display = 'block';
+  document.getElementById('topo-force-config').style.display = 'block';
+  document.getElementById('topo-progress').style.display = 'none';
+  document.getElementById('topo-result').style.display = 'none';
+  document.getElementById('topo-step-hint').textContent = '2. 调整参数后重新开始优化';
+
+  topoStep = 'addForce';
+  canvas.style.cursor = 'crosshair';
+
+  updateTopoVisualization();
+  checkTopoCanStart();
+  render();
+  updateStatus('已重置优化结果，可调整参数后重新开始');
+}
+
 function resetTopoDomain() {
   stopTopoOptimization();
   topoDomain = null;
@@ -1650,8 +1673,8 @@ function updateTopoVisualization() {
   }
 
   const fixedEdges = getTopoFixedEdges();
-  const nx = parseInt(document.getElementById('topo-nx').value) || 40;
-  const ny = parseInt(document.getElementById('topo-ny').value) || 20;
+  const nx = Math.max(20, parseInt(document.getElementById('topo-nx').value) || 40);
+  const ny = Math.max(10, parseInt(document.getElementById('topo-ny').value) || 20);
   const elemW = topoDomain.width / nx;
   const elemH = topoDomain.height / ny;
 
@@ -1692,8 +1715,10 @@ function startTopoOptimization() {
     return;
   }
 
-  const nx = parseInt(document.getElementById('topo-nx').value) || 40;
-  const ny = parseInt(document.getElementById('topo-ny').value) || 20;
+  const nx = Math.max(20, parseInt(document.getElementById('topo-nx').value) || 40);
+  const ny = Math.max(10, parseInt(document.getElementById('topo-ny').value) || 20);
+  document.getElementById('topo-nx').value = nx;
+  document.getElementById('topo-ny').value = ny;
   const volFrac = parseFloat(document.getElementById('topo-volfrac').value) || 0.4;
 
   topoOptimizer = new TopoOptimizer({
@@ -1789,6 +1814,35 @@ function isInsideTopoDomain(x, y) {
   if (!topoDomain) return false;
   return x >= topoDomain.originX && x <= topoDomain.originX + topoDomain.width &&
     y >= topoDomain.originY && y <= topoDomain.originY + topoDomain.height;
+}
+
+function findTopoEdge(x, y) {
+  if (!topoDomain) return null;
+  const d = topoDomain;
+  const tol = 10;
+  const x0 = d.originX, y0 = d.originY;
+  const x1 = d.originX + d.width, y1 = d.originY + d.height;
+  if (x >= x0 - tol && x <= x1 + tol && y >= y0 - tol && y <= y1 + tol) {
+    const dLeft = Math.abs(x - x0);
+    const dRight = Math.abs(x - x1);
+    const dTop = Math.abs(y - y0);
+    const dBottom = Math.abs(y - y1);
+    const minD = Math.min(dLeft, dRight, dTop, dBottom);
+    if (minD <= tol) {
+      if (minD === dLeft) return 'left';
+      if (minD === dRight) return 'right';
+      if (minD === dTop) return 'top';
+      return 'bottom';
+    }
+  }
+  return null;
+}
+
+function toggleTopoEdge(edge) {
+  const cb = document.getElementById('topo-fix-' + edge);
+  cb.checked = !cb.checked;
+  updateTopoVisualization();
+  checkTopoCanStart();
 }
 
 function addTopoForce(x, y) {
@@ -2642,9 +2696,12 @@ canvas.addEventListener('mousedown', (e) => {
       mouseState.mode = 'topoDragDomain';
       return;
     }
-    if (topoStep === 'addForce' && isInsideTopoDomain(pos.x, pos.y)) {
-      addTopoForce(pos.x, pos.y);
-      return;
+    if (topoDomain) {
+      const edge = findTopoEdge(pos.x, pos.y);
+      if (edge) {
+        toggleTopoEdge(edge);
+        return;
+      }
     }
     if ((topoStep === 'setEdges' || topoStep === 'addForce') && isInsideTopoDomain(pos.x, pos.y)) {
       addTopoForce(pos.x, pos.y);
@@ -2716,6 +2773,19 @@ canvas.addEventListener('mousemove', (e) => {
 
   if (!influenceActive && !topoActive) {
     updateTooltip(e);
+  }
+
+  if (topoActive && !topoRunning && topoDomain) {
+    const edge = findTopoEdge(pos.x, pos.y);
+    if (edge) {
+      canvas.style.cursor = 'pointer';
+      renderer.topoHoverEdge = edge;
+    } else if (topoStep === 'setEdges' || topoStep === 'addForce') {
+      canvas.style.cursor = isInsideTopoDomain(pos.x, pos.y) ? 'crosshair' : 'default';
+      renderer.topoHoverEdge = null;
+    } else {
+      renderer.topoHoverEdge = null;
+    }
   }
 
   if (topoActive && topoOptimizer && !topoRunning) {
@@ -4372,10 +4442,7 @@ document.getElementById('topo-reset-domain').addEventListener('click', resetTopo
 document.getElementById('topo-stop').addEventListener('click', stopTopoOptimization);
 document.getElementById('topo-exit').addEventListener('click', exitTopoMode);
 document.getElementById('topo-result-exit').addEventListener('click', exitTopoMode);
-document.getElementById('topo-restart').addEventListener('click', () => {
-  resetTopoDomain();
-  enterTopoMode();
-});
+document.getElementById('topo-restart').addEventListener('click', restartTopoOptimization);
 document.getElementById('topo-clear-forces').addEventListener('click', () => {
   topoForces = [];
   updateTopoForceList();

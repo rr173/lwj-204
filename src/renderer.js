@@ -29,6 +29,7 @@ export class Renderer {
     this.topoData = null;
     this.topoDragRect = null;
     this.topoHoverDensity = null;
+    this.topoHoverEdge = null;
   }
 
   resize() {
@@ -1031,6 +1032,21 @@ export class Renderer {
             ctx.stroke();
           }
         }
+      }
+
+      if (this.topoHoverEdge && d.fixedEdges) {
+        ctx.strokeStyle = 'rgba(255, 152, 0, 0.7)';
+        ctx.lineWidth = 6;
+        ctx.setLineDash([6, 3]);
+        const x0 = d.originX;
+        const y0 = d.originY;
+        const x1 = d.originX + d.nx * d.elemW;
+        const y1 = d.originY + d.ny * d.elemH;
+        if (this.topoHoverEdge === 'left') { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.stroke(); }
+        if (this.topoHoverEdge === 'right') { ctx.beginPath(); ctx.moveTo(x1, y0); ctx.lineTo(x1, y1); ctx.stroke(); }
+        if (this.topoHoverEdge === 'top') { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke(); }
+        if (this.topoHoverEdge === 'bottom') { ctx.beginPath(); ctx.moveTo(x0, y1); ctx.lineTo(x1, y1); ctx.stroke(); }
+        ctx.setLineDash([]);
       }
 
       if (d.forces && d.forces.length > 0) {
