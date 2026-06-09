@@ -1287,3 +1287,186 @@ body {
   color: #b0bec5;
   font-family: 'Menlo', 'Consolas', monospace;
 }
+
+.btn-topo {
+  background: #00838f;
+  color: #fff;
+  border-color: #00838f;
+}
+
+.btn-topo:hover {
+  background: #006064;
+  border-color: #006064;
+}
+
+.btn-topo.active {
+  background: #004d40;
+  border-color: #004d40;
+}
+
+.topo-step-hint {
+  font-size: 12px;
+  color: #00838f;
+  font-weight: 600;
+  padding: 6px 0;
+  border-bottom: 1px solid #e0f2f1;
+  margin-bottom: 8px;
+}
+
+.topo-edge-config {
+  margin-bottom: 10px;
+}
+
+.topo-edge-config h4 {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.topo-edge-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.topo-edge-row label {
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.topo-force-config {
+  margin-bottom: 10px;
+}
+
+.topo-force-config h4 {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.topo-force-hint {
+  font-size: 10px;
+  color: #999;
+  margin-bottom: 6px;
+}
+
+.topo-force-dir-group {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.topo-force-dir {
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+}
+
+.topo-force-dir.active {
+  background: #00838f !important;
+  color: #fff !important;
+  border-color: #00838f !important;
+}
+
+.topo-force-magnitude label {
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.topo-force-magnitude input {
+  width: 70px;
+  padding: 2px 4px;
+  font-size: 11px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.topo-force-list {
+  max-height: 60px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.topo-force-item {
+  font-size: 10px;
+  color: #555;
+  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.topo-force-item-delete {
+  color: #999;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.topo-force-item-delete:hover {
+  color: #e53935;
+}
+
+.topo-params {
+  margin-bottom: 10px;
+}
+
+.topo-params label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.topo-params input {
+  width: 60px;
+  padding: 2px 4px;
+  font-size: 11px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.topo-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.topo-progress-info {
+  font-size: 11px;
+  color: #555;
+  line-height: 1.8;
+}
+
+.topo-density-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.topo-legend-block {
+  width: 20px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.topo-legend-solid {
+  background: #222;
+}
+
+.topo-legend-void {
+  background: #fff;
+  border: 1px solid #ccc;
+}
+
+.topo-legend-label {
+  font-size: 10px;
+  color: #666;
+}

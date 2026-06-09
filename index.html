@@ -19,6 +19,7 @@
         <button id="btn-modal" class="btn btn-modal">模态分析</button>
         <button id="btn-influence" class="btn btn-influence">影响线</button>
         <button id="btn-construction" class="btn btn-construction">施工阶段</button>
+        <button id="btn-topo" class="btn btn-topo">拓扑优化</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -133,6 +134,72 @@
       </div>
       </div>
 
+      <div class="panel-section" id="topo-section" style="display:none;">
+        <h3>拓扑优化</h3>
+        <div id="topo-setup" style="display:block;">
+          <div id="topo-step-hint" class="topo-step-hint">1. 在画布上拖拽出设计域矩形</div>
+          <div id="topo-edge-config" class="topo-edge-config" style="display:none;">
+            <h4>边界条件</h4>
+            <div class="topo-edge-row">
+              <label><input type="checkbox" id="topo-fix-left" /> 左边固定</label>
+              <label><input type="checkbox" id="topo-fix-right" /> 右边固定</label>
+            </div>
+            <div class="topo-edge-row">
+              <label><input type="checkbox" id="topo-fix-top" /> 上边固定</label>
+              <label><input type="checkbox" id="topo-fix-bottom" /> 下边固定</label>
+            </div>
+          </div>
+          <div id="topo-force-config" class="topo-force-config" style="display:none;">
+            <h4>集中力</h4>
+            <div class="topo-force-hint">点击设计域内/边上添加力</div>
+            <div class="topo-force-dir-group">
+              <button id="topo-force-down" class="btn btn-small topo-force-dir active" data-dir="down">↓ 向下</button>
+              <button id="topo-force-left" class="btn btn-small topo-force-dir" data-dir="left">← 向左</button>
+              <button id="topo-force-right" class="btn btn-small topo-force-dir" data-dir="right">→ 向右</button>
+            </div>
+            <div class="topo-force-magnitude">
+              <label>力大小(N): <input type="number" id="topo-force-value" value="10000" step="1000" min="1" /></label>
+            </div>
+            <div id="topo-force-list" class="topo-force-list"></div>
+            <button id="topo-clear-forces" class="btn btn-small" style="margin-top:4px;">清除所有力</button>
+          </div>
+          <div class="topo-params">
+            <label>体积分数: <input type="number" id="topo-volfrac" value="0.4" min="0.1" max="0.9" step="0.05" /></label>
+            <label>网格NX: <input type="number" id="topo-nx" value="40" min="10" max="80" step="5" /></label>
+            <label>网格NY: <input type="number" id="topo-ny" value="20" min="5" max="40" step="5" /></label>
+          </div>
+          <div class="topo-actions">
+            <button id="topo-reset-domain" class="btn btn-small">重选区域</button>
+            <button id="topo-start" class="btn btn-small btn-primary" disabled>开始优化</button>
+          </div>
+        </div>
+        <div id="topo-progress" style="display:none;">
+          <div class="topo-progress-info">
+            <div>迭代: <span id="topo-iter">0</span> / 200</div>
+            <div>柔度: <span id="topo-compliance">—</span></div>
+            <div>体积分数: <span id="topo-current-vol">—</span></div>
+            <div>最大密度变化: <span id="topo-max-change">—</span></div>
+          </div>
+          <button id="topo-stop" class="btn btn-small" style="margin-top:6px;">停止优化</button>
+          <button id="topo-exit" class="btn btn-small" style="margin-top:6px;">退出拓扑优化</button>
+        </div>
+        <div id="topo-result" style="display:none;">
+          <div class="topo-progress-info">
+            <div><strong>优化完成</strong></div>
+            <div>最终迭代: <span id="topo-final-iter">—</span></div>
+            <div>最终柔度: <span id="topo-final-compliance">—</span></div>
+            <div>最终体积分数: <span id="topo-final-vol">—</span></div>
+          </div>
+          <div class="topo-density-legend">
+            <span class="topo-legend-block topo-legend-solid"></span>
+            <span class="topo-legend-label">实体(1.0)</span>
+            <span class="topo-legend-block topo-legend-void"></span>
+            <span class="topo-legend-label">空洞(0.0)</span>
+          </div>
+          <button id="topo-result-exit" class="btn btn-small" style="margin-top:6px;">退出拓扑优化</button>
+          <button id="topo-restart" class="btn btn-small" style="margin-top:4px;">重新优化</button>
+        </div>
+      </div>
       <div class="panel-section">
         <h3>图例</h3>
         <div class="legend-item">

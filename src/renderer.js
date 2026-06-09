@@ -26,6 +26,9 @@ export class Renderer {
     this.influenceForcePosition = null;
     this.influenceResponseValue = null;
     this.constructionStageInfo = null;
+    this.topoData = null;
+    this.topoDragRect = null;
+    this.topoHoverDensity = null;
   }
 
   resize() {
@@ -920,6 +923,171 @@ export class Renderer {
     if (this.influenceActive) {
       this.drawInfluenceSectionMarker(nodeMap);
       this.drawInfluenceForceArrow(nodeMap);
+    }
+
+    if (this.topoData || this.topoDragRect) {
+      this.drawTopoVisualization();
+    }
+  }
+
+  drawTopoVisualization() {
+    if (this.topoDragRect) {
+      const r = this.topoDragRect;
+      const x = Math.min(r.startX, r.endX);
+      const y = Math.min(r.startY, r.endY);
+      const w = Math.abs(r.endX - r.startX);
+      const h = Math.abs(r.endY - r.startY);
+
+      this.ctx.strokeStyle = '#00838f';
+      this.ctx.lineWidth = 2;
+      this.ctx.setLineDash([8, 4]);
+      this.ctx.strokeRect(x, y, w, h);
+      this.ctx.setLineDash([]);
+
+      this.ctx.fillStyle = 'rgba(0, 131, 143, 0.08)';
+      this.ctx.fillRect(x, y, w, h);
+
+      this.ctx.font = '12px sans-serif';
+      this.ctx.textAlign = 'center';
+      this.ctx.fillStyle = '#00838f';
+      this.ctx.fillText('设计域', x + w / 2, y + h / 2);
+    }
+
+    if (this.topoData) {
+      const d = this.topoData;
+      const ctx = this.ctx;
+
+      for (let ej = 0; ej < d.ny; ej++) {
+        for (let ei = 0; ei < d.nx; ei++) {
+          const rho = d.density[ej * d.nx + ei];
+          const v = Math.floor(255 * (1 - rho));
+          ctx.fillStyle = `rgb(${v},${v},${v})`;
+          ctx.fillRect(
+            d.originX + ei * d.elemW,
+            d.originY + ej * d.elemH,
+            d.elemW + 0.5,
+            d.elemH + 0.5
+          );
+        }
+      }
+
+      ctx.strokeStyle = '#00838f';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(d.originX, d.originY, d.nx * d.elemW, d.ny * d.elemH);
+
+      if (d.fixedEdges) {
+        ctx.strokeStyle = '#2e7d32';
+        ctx.lineWidth = 4;
+        const x0 = d.originX;
+        const y0 = d.originY;
+        const x1 = d.originX + d.nx * d.elemW;
+        const y1 = d.originY + d.ny * d.elemH;
+
+        if (d.fixedEdges.left) {
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x0, y1);
+          ctx.stroke();
+          for (let yy = y0; yy < y1; yy += 8) {
+            ctx.beginPath();
+            ctx.moveTo(x0, yy);
+            ctx.lineTo(x0 - 6, yy + 6);
+            ctx.stroke();
+          }
+        }
+        if (d.fixedEdges.right) {
+          ctx.beginPath();
+          ctx.moveTo(x1, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+          for (let yy = y0; yy < y1; yy += 8) {
+            ctx.beginPath();
+            ctx.moveTo(x1, yy);
+            ctx.lineTo(x1 + 6, yy + 6);
+            ctx.stroke();
+          }
+        }
+        if (d.fixedEdges.top) {
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y0);
+          ctx.stroke();
+          for (let xx = x0; xx < x1; xx += 8) {
+            ctx.beginPath();
+            ctx.moveTo(xx, y0);
+            ctx.lineTo(xx + 6, y0 - 6);
+            ctx.stroke();
+          }
+        }
+        if (d.fixedEdges.bottom) {
+          ctx.beginPath();
+          ctx.moveTo(x0, y1);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+          for (let xx = x0; xx < x1; xx += 8) {
+            ctx.beginPath();
+            ctx.moveTo(xx, y1);
+            ctx.lineTo(xx + 6, y1 + 6);
+            ctx.stroke();
+          }
+        }
+      }
+
+      if (d.forces && d.forces.length > 0) {
+        for (const f of d.forces) {
+          const fx = f.fx || 0;
+          const fy = f.fy || 0;
+          const mag = Math.sqrt(fx * fx + fy * fy);
+          if (mag < 1e-6) continue;
+
+          const arrowLen = Math.min(40, Math.max(15, mag * 0.003));
+          const nx = fx / mag;
+          const ny = fy / mag;
+
+          const startX = f.x - nx * 5;
+          const startY = f.y - ny * 5;
+          const endX = startX + nx * arrowLen;
+          const endY = startY + ny * arrowLen;
+
+          ctx.strokeStyle = '#d32f2f';
+          ctx.fillStyle = '#d32f2f';
+          ctx.lineWidth = 3;
+          ctx.lineCap = 'round';
+
+          ctx.beginPath();
+          ctx.moveTo(startX, startY);
+          ctx.lineTo(endX, endY);
+          ctx.stroke();
+
+          const headLength = 10;
+          const angle = Math.atan2(ny, nx);
+          ctx.beginPath();
+          ctx.moveTo(endX, endY);
+          ctx.lineTo(endX - headLength * Math.cos(angle - Math.PI / 6), endY - headLength * Math.sin(angle - Math.PI / 6));
+          ctx.lineTo(endX - headLength * Math.cos(angle + Math.PI / 6), endY - headLength * Math.sin(angle + Math.PI / 6));
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.font = 'bold 10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${(mag / 1000).toFixed(1)}kN`, startX + nx * (arrowLen + 15), startY + ny * (arrowLen + 15));
+        }
+      }
+
+      if (this.topoHoverDensity) {
+        const h = this.topoHoverDensity;
+        const hx = d.originX + h.ei * d.elemW;
+        const hy = d.originY + h.ej * d.elemH;
+
+        ctx.strokeStyle = '#ff6f00';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(hx, hy, d.elemW, d.elemH);
+
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#ff6f00';
+        ctx.fillText(`ρ=${h.density.toFixed(3)}`, hx + d.elemW + 4, hy + d.elemH / 2 + 4);
+      }
     }
   }
 }

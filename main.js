@@ -5,6 +5,7 @@ import { solveTruss, solveFrame } from './src/solver.js';
 import { solveModal } from './src/modal.js';
 import { HistoryManager } from './src/history.js';
 import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases, createConstructionStagePreset } from './src/presets.js';
+import { TopoOptimizer } from './src/topo.js';
 
 const canvas = document.getElementById('canvas');
 const renderer = new Renderer(canvas);
@@ -78,6 +79,17 @@ let sectionStressDragStartX = 0;
 let sectionStressDragStartY = 0;
 let sectionStressDragStartPanX = 0;
 let sectionStressDragStartPanY = 0;
+
+let topoActive = false;
+let topoStep = 'idle';
+let topoDomain = null;
+let topoOptimizer = null;
+let topoRunning = false;
+let topoTimer = null;
+let topoForces = [];
+let topoForceDir = 'down';
+let topoDragStart = null;
+let topoDragEnd = null;
 
 function getCurrentLoadCase() {
   return loadCases.find(lc => lc.id === currentLoadCaseId);
@@ -1513,6 +1525,300 @@ function updateTimeline() {
   }
 }
 
+function enterTopoMode() {
+  if (modalActive) exitModalMode();
+  if (influenceActive) exitInfluenceMode();
+  if (constructionActive) exitConstructionMode();
+  if (sectionStressActive) hideSectionStressView();
+
+  topoActive = true;
+  topoStep = 'drawDomain';
+  topoDomain = null;
+  topoOptimizer = null;
+  topoRunning = false;
+  topoForces = [];
+
+  renderer.topoData = null;
+  renderer.topoDragRect = null;
+  renderer.topoHoverDensity = null;
+
+  document.getElementById('topo-section').style.display = 'block';
+  document.getElementById('btn-topo').classList.add('active');
+  document.getElementById('topo-setup').style.display = 'block';
+  document.getElementById('topo-edge-config').style.display = 'none';
+  document.getElementById('topo-force-config').style.display = 'none';
+  document.getElementById('topo-progress').style.display = 'none';
+  document.getElementById('topo-result').style.display = 'none';
+  document.getElementById('topo-start').disabled = true;
+  document.getElementById('topo-step-hint').textContent = '1. 在画布上拖拽出设计域矩形';
+
+  document.getElementById('topo-fix-left').checked = false;
+  document.getElementById('topo-fix-right').checked = false;
+  document.getElementById('topo-fix-top').checked = false;
+  document.getElementById('topo-fix-bottom').checked = false;
+  document.getElementById('topo-force-list').innerHTML = '';
+
+  canvas.style.cursor = 'crosshair';
+  render();
+  updateStatus('拓扑优化模式: 请在画布上拖拽出矩形设计域');
+}
+
+function exitTopoMode() {
+  stopTopoOptimization();
+  topoActive = false;
+  topoStep = 'idle';
+  topoDomain = null;
+  topoOptimizer = null;
+  topoRunning = false;
+  topoForces = [];
+
+  renderer.topoData = null;
+  renderer.topoDragRect = null;
+  renderer.topoHoverDensity = null;
+
+  document.getElementById('topo-section').style.display = 'none';
+  document.getElementById('btn-topo').classList.remove('active');
+  canvas.style.cursor = 'crosshair';
+  render();
+}
+
+function resetTopoDomain() {
+  stopTopoOptimization();
+  topoDomain = null;
+  topoOptimizer = null;
+  topoStep = 'drawDomain';
+  topoForces = [];
+
+  renderer.topoData = null;
+  renderer.topoDragRect = null;
+  renderer.topoHoverDensity = null;
+
+  document.getElementById('topo-setup').style.display = 'block';
+  document.getElementById('topo-edge-config').style.display = 'none';
+  document.getElementById('topo-force-config').style.display = 'none';
+  document.getElementById('topo-progress').style.display = 'none';
+  document.getElementById('topo-result').style.display = 'none';
+  document.getElementById('topo-start').disabled = true;
+  document.getElementById('topo-step-hint').textContent = '1. 在画布上拖拽出设计域矩形';
+
+  document.getElementById('topo-fix-left').checked = false;
+  document.getElementById('topo-fix-right').checked = false;
+  document.getElementById('topo-fix-top').checked = false;
+  document.getElementById('topo-fix-bottom').checked = false;
+  document.getElementById('topo-force-list').innerHTML = '';
+
+  canvas.style.cursor = 'crosshair';
+  render();
+}
+
+function updateTopoForceList() {
+  const container = document.getElementById('topo-force-list');
+  container.innerHTML = '';
+  topoForces.forEach((f, idx) => {
+    const item = document.createElement('div');
+    item.className = 'topo-force-item';
+    const dirLabel = f.fy > 0 ? '↓' : f.fx > 0 ? '→' : '←';
+    item.innerHTML = `力${idx + 1}: ${dirLabel} ${(Math.abs(f.fy || f.fx) / 1000).toFixed(1)}kN`;
+    const del = document.createElement('span');
+    del.className = 'topo-force-item-delete';
+    del.textContent = '×';
+    del.onclick = (e) => {
+      e.stopPropagation();
+      topoForces.splice(idx, 1);
+      updateTopoForceList();
+      updateTopoVisualization();
+    };
+    item.appendChild(del);
+    container.appendChild(item);
+  });
+}
+
+function getTopoFixedEdges() {
+  return {
+    left: document.getElementById('topo-fix-left').checked,
+    right: document.getElementById('topo-fix-right').checked,
+    top: document.getElementById('topo-fix-top').checked,
+    bottom: document.getElementById('topo-fix-bottom').checked
+  };
+}
+
+function updateTopoVisualization() {
+  if (!topoDomain) {
+    renderer.topoData = null;
+    render();
+    return;
+  }
+
+  const fixedEdges = getTopoFixedEdges();
+  const nx = parseInt(document.getElementById('topo-nx').value) || 40;
+  const ny = parseInt(document.getElementById('topo-ny').value) || 20;
+  const elemW = topoDomain.width / nx;
+  const elemH = topoDomain.height / ny;
+
+  let density = null;
+  if (topoOptimizer) {
+    const field = topoOptimizer.getDensityField();
+    density = field.density;
+  } else {
+    density = new Float64Array(nx * ny).fill(parseFloat(document.getElementById('topo-volfrac').value) || 0.4);
+  }
+
+  renderer.topoData = {
+    nx,
+    ny,
+    originX: topoDomain.originX,
+    originY: topoDomain.originY,
+    elemW,
+    elemH,
+    density,
+    fixedEdges,
+    forces: topoForces
+  };
+
+  render();
+}
+
+function startTopoOptimization() {
+  if (!topoDomain) return;
+
+  const fixedEdges = getTopoFixedEdges();
+  const hasFixed = fixedEdges.left || fixedEdges.right || fixedEdges.top || fixedEdges.bottom;
+  if (!hasFixed) {
+    alert('请至少选择一条固定边');
+    return;
+  }
+  if (topoForces.length === 0) {
+    alert('请至少添加一个集中力');
+    return;
+  }
+
+  const nx = parseInt(document.getElementById('topo-nx').value) || 40;
+  const ny = parseInt(document.getElementById('topo-ny').value) || 20;
+  const volFrac = parseFloat(document.getElementById('topo-volfrac').value) || 0.4;
+
+  topoOptimizer = new TopoOptimizer({
+    nx,
+    ny,
+    pixelWidth: topoDomain.width,
+    pixelHeight: topoDomain.height,
+    originX: topoDomain.originX,
+    originY: topoDomain.originY,
+    E: 200e9,
+    nu: 0.3,
+    p: 3,
+    volFrac,
+    thickness: 1,
+    fixedEdges,
+    forces: topoForces.map(f => ({
+      x: f.x,
+      y: f.y,
+      fx: f.fx || 0,
+      fy: f.fy || 0
+    }))
+  });
+
+  topoRunning = true;
+  document.getElementById('topo-setup').style.display = 'none';
+  document.getElementById('topo-progress').style.display = 'block';
+  document.getElementById('topo-result').style.display = 'none';
+
+  runTopoIteration();
+}
+
+function runTopoIteration() {
+  if (!topoRunning || !topoOptimizer) return;
+
+  let iterCount = 0;
+  const batchSize = 1;
+
+  const doStep = () => {
+    if (!topoRunning || !topoOptimizer) return;
+
+    const canContinue = topoOptimizer.step();
+    iterCount++;
+
+    const field = topoOptimizer.getDensityField();
+    renderer.topoData = {
+      nx: field.nx,
+      ny: field.ny,
+      originX: field.originX,
+      originY: field.originY,
+      elemW: field.elemW,
+      elemH: field.elemH,
+      density: field.density,
+      fixedEdges: getTopoFixedEdges(),
+      forces: topoForces
+    };
+
+    if (iterCount % 5 === 0 || !canContinue) {
+      render();
+    }
+
+    document.getElementById('topo-iter').textContent = topoOptimizer.iteration;
+    document.getElementById('topo-compliance').textContent = topoOptimizer.compliance.toExponential(4);
+    document.getElementById('topo-current-vol').textContent = topoOptimizer.currentVolFrac.toFixed(4);
+    document.getElementById('topo-max-change').textContent = topoOptimizer.maxChange.toFixed(6);
+
+    if (!canContinue) {
+      topoRunning = false;
+      document.getElementById('topo-progress').style.display = 'none';
+      document.getElementById('topo-result').style.display = 'block';
+      document.getElementById('topo-final-iter').textContent = topoOptimizer.iteration;
+      document.getElementById('topo-final-compliance').textContent = topoOptimizer.compliance.toExponential(4);
+      document.getElementById('topo-final-vol').textContent = topoOptimizer.currentVolFrac.toFixed(4);
+      render();
+      updateStatus(`拓扑优化完成: ${topoOptimizer.iteration}次迭代, 柔度=${topoOptimizer.compliance.toExponential(4)}`);
+      return;
+    }
+
+    topoTimer = setTimeout(doStep, 0);
+  };
+
+  topoTimer = setTimeout(doStep, 0);
+}
+
+function stopTopoOptimization() {
+  topoRunning = false;
+  if (topoTimer) {
+    clearTimeout(topoTimer);
+    topoTimer = null;
+  }
+}
+
+function isInsideTopoDomain(x, y) {
+  if (!topoDomain) return false;
+  return x >= topoDomain.originX && x <= topoDomain.originX + topoDomain.width &&
+    y >= topoDomain.originY && y <= topoDomain.originY + topoDomain.height;
+}
+
+function addTopoForce(x, y) {
+  const mag = parseFloat(document.getElementById('topo-force-value').value) || 10000;
+  let fx = 0, fy = 0;
+  if (topoForceDir === 'down') fy = mag;
+  else if (topoForceDir === 'left') fx = -mag;
+  else if (topoForceDir === 'right') fx = mag;
+
+  topoForces.push({ x, y, fx, fy });
+  updateTopoForceList();
+  updateTopoVisualization();
+
+  const canStart = topoDomain &&
+    (getTopoFixedEdges().left || getTopoFixedEdges().right ||
+      getTopoFixedEdges().top || getTopoFixedEdges().bottom) &&
+    topoForces.length > 0;
+  document.getElementById('topo-start').disabled = !canStart;
+}
+
+function checkTopoCanStart() {
+  if (!topoDomain) {
+    document.getElementById('topo-start').disabled = true;
+    return;
+  }
+  const hasFixed = getTopoFixedEdges().left || getTopoFixedEdges().right ||
+    getTopoFixedEdges().top || getTopoFixedEdges().bottom;
+  document.getElementById('topo-start').disabled = !(hasFixed && topoForces.length > 0);
+}
+
 function init() {
   renderer.resize();
 
@@ -2328,6 +2634,26 @@ canvas.addEventListener('mousedown', (e) => {
 
   if (influenceActive) return;
 
+  if (topoActive && !topoRunning) {
+    if (topoStep === 'drawDomain') {
+      topoDragStart = { x: pos.x, y: pos.y };
+      topoDragEnd = { x: pos.x, y: pos.y };
+      mouseState.isDown = true;
+      mouseState.mode = 'topoDragDomain';
+      return;
+    }
+    if (topoStep === 'addForce' && isInsideTopoDomain(pos.x, pos.y)) {
+      addTopoForce(pos.x, pos.y);
+      return;
+    }
+    if ((topoStep === 'setEdges' || topoStep === 'addForce') && isInsideTopoDomain(pos.x, pos.y)) {
+      addTopoForce(pos.x, pos.y);
+      return;
+    }
+  }
+
+  if (topoActive) return;
+
   mouseState.isDown = true;
   mouseState.startX = pos.x;
   mouseState.startY = pos.y;
@@ -2388,11 +2714,35 @@ canvas.addEventListener('mousedown', (e) => {
 canvas.addEventListener('mousemove', (e) => {
   const pos = getMousePos(e);
 
-  if (!influenceActive) {
+  if (!influenceActive && !topoActive) {
     updateTooltip(e);
   }
 
+  if (topoActive && topoOptimizer && !topoRunning) {
+    if (isInsideTopoDomain(pos.x, pos.y)) {
+      const info = topoOptimizer.getDensityAt(pos.x, pos.y);
+      renderer.topoHoverDensity = info;
+    } else {
+      renderer.topoHoverDensity = null;
+    }
+    render();
+  }
+
+  if (topoActive && mouseState.mode === 'topoDragDomain' && mouseState.isDown) {
+    topoDragEnd = { x: pos.x, y: pos.y };
+    renderer.topoDragRect = {
+      startX: topoDragStart.x,
+      startY: topoDragStart.y,
+      endX: topoDragEnd.x,
+      endY: topoDragEnd.y
+    };
+    render();
+    return;
+  }
+
   if (influenceActive) return;
+
+  if (topoActive) return;
 
   if (!mouseState.isDown) return;
 
@@ -2452,6 +2802,40 @@ canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
 
   if (influenceActive) return;
+
+  if (mouseState.mode === 'topoDragDomain' && topoDragStart && topoDragEnd) {
+    const x1 = Math.min(topoDragStart.x, topoDragEnd.x);
+    const y1 = Math.min(topoDragStart.y, topoDragEnd.y);
+    const x2 = Math.max(topoDragStart.x, topoDragEnd.x);
+    const y2 = Math.max(topoDragStart.y, topoDragEnd.y);
+    const w = x2 - x1;
+    const h = y2 - y1;
+
+    if (w > 40 && h > 20) {
+      topoDomain = { originX: x1, originY: y1, width: w, height: h };
+      topoStep = 'setEdges';
+      renderer.topoDragRect = null;
+
+      document.getElementById('topo-edge-config').style.display = 'block';
+      document.getElementById('topo-force-config').style.display = 'block';
+      document.getElementById('topo-step-hint').textContent = '2. 设置边界条件和力，然后开始优化';
+
+      updateTopoVisualization();
+      updateStatus('设计域已创建，请设置边界条件（固定边）和集中力');
+    } else {
+      renderer.topoDragRect = null;
+      render();
+      updateStatus('设计域太小，请重新拖拽');
+    }
+
+    mouseState.isDown = false;
+    mouseState.mode = null;
+    topoDragStart = null;
+    topoDragEnd = null;
+    return;
+  }
+
+  if (topoActive) return;
 
   const pos = getMousePos(e);
 
@@ -2532,6 +2916,7 @@ canvas.addEventListener('mouseup', (e) => {
 
 canvas.addEventListener('contextmenu', (e) => {
   if (influenceActive) { e.preventDefault(); return; }
+  if (topoActive) { e.preventDefault(); return; }
   const pos = getMousePos(e);
   const node = findNodeAt(pos.x, pos.y);
   const member = !node ? findMemberAt(pos.x, pos.y) : null;
@@ -2545,6 +2930,7 @@ canvas.addEventListener('contextmenu', (e) => {
 
 canvas.addEventListener('dblclick', (e) => {
   if (influenceActive) return;
+  if (topoActive) return;
   const pos = getMousePos(e);
   const node = findNodeAt(pos.x, pos.y);
   const member = !node ? findMemberAt(pos.x, pos.y) : null;
@@ -2740,6 +3126,7 @@ document.getElementById('btn-clear').addEventListener('click', () => {
     if (modalActive) exitModalMode();
     if (influenceActive) exitInfluenceMode();
     if (constructionActive) exitConstructionMode();
+    if (topoActive) exitTopoMode();
     constructionStages = [];
     currentStageIndex = -1;
     nodes = [];
@@ -3970,6 +4357,53 @@ document.getElementById('btn-construction').addEventListener('click', () => {
   } else {
     enterConstructionMode();
   }
+});
+
+document.getElementById('btn-topo').addEventListener('click', () => {
+  if (topoActive) {
+    exitTopoMode();
+  } else {
+    enterTopoMode();
+  }
+});
+
+document.getElementById('topo-start').addEventListener('click', startTopoOptimization);
+document.getElementById('topo-reset-domain').addEventListener('click', resetTopoDomain);
+document.getElementById('topo-stop').addEventListener('click', stopTopoOptimization);
+document.getElementById('topo-exit').addEventListener('click', exitTopoMode);
+document.getElementById('topo-result-exit').addEventListener('click', exitTopoMode);
+document.getElementById('topo-restart').addEventListener('click', () => {
+  resetTopoDomain();
+  enterTopoMode();
+});
+document.getElementById('topo-clear-forces').addEventListener('click', () => {
+  topoForces = [];
+  updateTopoForceList();
+  updateTopoVisualization();
+  checkTopoCanStart();
+});
+
+document.querySelectorAll('.topo-force-dir').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.topo-force-dir').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    topoForceDir = btn.dataset.dir;
+  });
+});
+
+['topo-fix-left', 'topo-fix-right', 'topo-fix-top', 'topo-fix-bottom'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    if (topoDomain) {
+      updateTopoVisualization();
+      checkTopoCanStart();
+    }
+  });
+});
+
+['topo-volfrac', 'topo-nx', 'topo-ny'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    if (topoDomain) updateTopoVisualization();
+  });
 });
 
 document.getElementById('btn-add-stage').addEventListener('click', () => {
