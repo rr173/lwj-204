@@ -102,6 +102,7 @@
       <div class="panel-tabs">
         <div class="panel-tab active" data-tab="general">工况管理</div>
         <div class="panel-tab" data-tab="construction">施工阶段</div>
+        <div class="panel-tab" data-tab="section">截面库</div>
       </div>
 
       <div id="tab-general" class="tab-content active">
@@ -132,6 +133,47 @@
       <div class="panel-section" id="stage-results-section" style="display:none;">
         <h3>阶段求解结果</h3>
         <div id="stage-results-content"></div>
+      </div>
+      </div>
+
+      <div id="tab-section" class="tab-content">
+      <div class="panel-section">
+        <h3>截面库</h3>
+        <div class="section-toolbar">
+          <input type="text" id="section-search" class="section-search-input" placeholder="搜索截面型号..." />
+        </div>
+        <div class="section-filter-bar">
+          <button class="btn btn-small section-filter-btn active" data-category="all">全部</button>
+          <button class="btn btn-small section-filter-btn" data-category="H型钢">H型钢</button>
+          <button class="btn btn-small section-filter-btn" data-category="方钢管">方钢管</button>
+        </div>
+        <div class="section-sort-bar">
+          <label class="section-sort-label">排序:</label>
+          <select id="section-sort-select" class="section-sort-select">
+            <option value="name">型号名称</option>
+            <option value="A">截面积</option>
+            <option value="Ix">惯性矩</option>
+            <option value="h">截面高度</option>
+            <option value="weight">每米重量</option>
+          </select>
+          <button id="btn-sort-toggle" class="btn btn-small" title="升序/降序">↑</button>
+        </div>
+        <div id="section-list" class="section-list"></div>
+      </div>
+      <div class="panel-section">
+        <h3>自动选型</h3>
+        <button id="btn-auto-select" class="btn btn-small btn-primary" style="width:100%;" disabled>自动选型</button>
+        <div id="auto-select-hint" class="auto-select-hint">请先求解工况</div>
+        <div id="auto-select-results" class="auto-select-results" style="display:none;">
+          <div class="auto-select-summary"></div>
+          <div id="auto-select-list" class="auto-select-list"></div>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>当前选中杆件</h3>
+        <div id="selected-members-section-info" class="selected-members-section-info">
+          <div class="no-selection-hint">未选中杆件</div>
+        </div>
       </div>
       </div>
 

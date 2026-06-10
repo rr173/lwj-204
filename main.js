@@ -6,6 +6,7 @@ import { solveModal } from './src/modal.js';
 import { HistoryManager } from './src/history.js';
 import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases, createConstructionStagePreset } from './src/presets.js';
 import { TopoOptimizer } from './src/topo.js';
+import { SECTIONS, searchSections, sortSections, selectOptimalSection, getSectionByName, YIELD_STRENGTH, SAFETY_FACTOR } from './src/sections.js';
 
 const canvas = document.getElementById('canvas');
 const renderer = new Renderer(canvas);
@@ -97,6 +98,13 @@ let compareLeftId = null;
 let compareRightId = null;
 let compareDiff = null;
 let compareMetrics = null;
+
+let currentSectionTab = 'general';
+let sectionFilterCategory = 'all';
+let sectionSortBy = 'name';
+let sectionSortAscending = true;
+let sectionSearchQuery = '';
+let autoSelectResults = null;
 
 function getCurrentLoadCase() {
   return loadCases.find(lc => lc.id === currentLoadCaseId);
@@ -329,6 +337,7 @@ function solveCurrentLoadCase() {
     render();
     if (sectionStressActive) drawSectionStressCloud();
     updateStatus('求解成功!');
+    updateAutoSelectButtonState();
     saveToStorage();
   } catch (e) {
     alert('求解失败: ' + e.message);
@@ -374,6 +383,7 @@ function solveAllLoadCases() {
   updateResultsDisplay();
   render();
   updateStatus(`批量求解完成: 成功 ${successCount} 个, 失败 ${failCount} 个`);
+  updateAutoSelectButtonState();
   saveToStorage();
 }
 
@@ -765,7 +775,8 @@ function saveToStorage() {
         release2: m.release2,
         q: m.q,
         rho: m.rho,
-        h: m.h
+        h: m.h,
+        sectionName: m.sectionName
       })),
       loadCases: loadCases,
       currentLoadCaseId,
@@ -808,6 +819,7 @@ function loadFromStorage() {
       q: m.q || 0,
       rho: m.rho || 7850,
       h: m.h || 0.2,
+      sectionName: m.sectionName || null,
       axialForce: 0,
       stress: 0,
       selected: false
@@ -2198,6 +2210,414 @@ function updateCompareMetrics() {
   `;
 }
 
+function switchPanelTab(tabName) {
+  currentSectionTab = tabName;
+  document.querySelectorAll('.panel-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === tabName);
+  });
+  document.querySelectorAll('.tab-content').forEach(content => {
+    content.classList.toggle('active', content.id === 'tab-' + tabName);
+  });
+  if (tabName === 'section') {
+    renderSectionList();
+    updateSelectedMembersSectionInfo();
+    updateAutoSelectButtonState();
+  }
+}
+
+function getFilteredAndSortedSections() {
+  let sections = [...SECTIONS];
+  if (sectionFilterCategory !== 'all') {
+    sections = sections.filter(s => s.category === sectionFilterCategory);
+  }
+  if (sectionSearchQuery) {
+    const lower = sectionSearchQuery.toLowerCase();
+    sections = sections.filter(s => 
+      s.name.toLowerCase().includes(lower) || 
+      s.category.toLowerCase().includes(lower)
+    );
+  }
+  sections = sortSections(sections, sectionSortBy, sectionSortAscending);
+  return sections;
+}
+
+function renderSectionList() {
+  const container = document.getElementById('section-list');
+  if (!container) return;
+
+  const sections = getFilteredAndSortedSections();
+  
+  if (sections.length === 0) {
+    container.innerHTML = '<div style="text-align:center;color:#999;padding:16px;font-size:11px;">无匹配截面</div>';
+    return;
+  }
+
+  let html = '';
+  for (const section of sections) {
+    html += `
+      <div class="section-item" data-section="${section.name}">
+        <div class="section-item-header">
+          <span class="section-item-name">${section.name}</span>
+          <span class="section-item-category">${section.category}</span>
+        </div>
+        <div class="section-item-params">
+          <span>A=${(section.A * 1e4).toFixed(2)}cm²</span>
+          <span>I=${(section.Ix * 1e8).toFixed(2)}cm⁴</span>
+          <span>h=${(section.h * 100).toFixed(1)}cm</span>
+          <span>${section.weight.toFixed(1)}kg/m</span>
+        </div>
+        <button class="section-apply-btn" data-section="${section.name}">应用到选中杆件</button>
+      </div>
+    `;
+  }
+  container.innerHTML = html;
+
+  container.querySelectorAll('.section-apply-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const sectionName = btn.dataset.section;
+      applySectionToSelectedMembers(sectionName);
+    };
+  });
+
+  container.querySelectorAll('.section-item').forEach(item => {
+    item.onclick = () => {
+      const sectionName = item.dataset.section;
+      applySectionToSelectedMembers(sectionName);
+    };
+  });
+}
+
+function applySectionToSelectedMembers(sectionName) {
+  if (selectedMembers.size === 0) {
+    alert('请先选择杆件');
+    return;
+  }
+
+  const section = getSectionByName(sectionName);
+  if (!section) return;
+
+  let changed = false;
+  for (const memberId of selectedMembers) {
+    const member = members.find(m => m.id === memberId);
+    if (member) {
+      member.A = section.A;
+      member.I = section.Ix;
+      member.h = section.h;
+      member.sectionName = sectionName;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
+    hasResults = false;
+    renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
+    envelopeData = null;
+    renderer.envelopeData = null;
+    historyManager.saveState(nodes, members);
+    updateLoadCaseList();
+    updateButtonStates();
+    render();
+    updateResultsDisplay();
+    updateEnvelopeDisplay();
+    updateSelectedMembersSectionInfo();
+    saveToStorage();
+    updateStatus(`已将截面 ${sectionName} 应用到 ${selectedMembers.size} 根杆件`);
+  }
+}
+
+function updateSelectedMembersSectionInfo() {
+  const container = document.getElementById('selected-members-section-info');
+  if (!container) return;
+
+  if (selectedMembers.size === 0) {
+    container.innerHTML = '<div class="no-selection-hint">未选中杆件</div>';
+    return;
+  }
+
+  let html = '';
+  for (const memberId of selectedMembers) {
+    const member = members.find(m => m.id === memberId);
+    if (!member) continue;
+
+    const sectionName = member.sectionName || '自定义';
+    const isCustom = !member.sectionName;
+    
+    html += `
+      <div class="selected-member-section-item">
+        <div class="member-id">杆件 #${memberId}</div>
+        <div class="section-name ${isCustom ? 'custom' : ''}">${sectionName}</div>
+        <div class="section-params">
+          A=${(member.A * 1e4).toFixed(2)}cm²
+          I=${(member.I * 1e8).toFixed(2)}cm⁴
+          h=${(member.h * 100).toFixed(1)}cm
+        </div>
+      </div>
+    `;
+  }
+  container.innerHTML = html;
+}
+
+function updateAutoSelectButtonState() {
+  const btn = document.getElementById('btn-auto-select');
+  const hint = document.getElementById('auto-select-hint');
+  if (!btn || !hint) return;
+
+  const canAutoSelect = hasResults && members.length > 0;
+  btn.disabled = !canAutoSelect;
+  
+  if (!canAutoSelect) {
+    hint.style.display = 'block';
+    hint.textContent = '请先求解工况';
+  } else {
+    hint.style.display = 'none';
+  }
+}
+
+function runAutoSelect() {
+  if (!hasResults) {
+    alert('请先求解工况');
+    return;
+  }
+
+  const results = [];
+  let successCount = 0;
+  let failCount = 0;
+  let totalWeightBefore = 0;
+  let totalWeightAfter = 0;
+  const PIXEL_TO_METER = 0.01;
+
+  for (const member of members) {
+    const lengthM = member.length * PIXEL_TO_METER;
+    const weightBefore = (member.sectionName ? (getSectionByName(member.sectionName)?.weight || 0) : member.A * 7850) * lengthM;
+    totalWeightBefore += weightBefore;
+
+    let axialForce = member.axialForce || 0;
+    let maxMoment = 0;
+
+    if (analysisMode === 'frame' && frameResults) {
+      const mr = frameResults.members.find(m => m.id === member.id);
+      if (mr) {
+        axialForce = mr.axialForce || 0;
+        maxMoment = Math.max(Math.abs(mr.M1 || 0), Math.abs(mr.M2 || 0));
+      }
+    }
+
+    const result = selectOptimalSection(axialForce, maxMoment, YIELD_STRENGTH, SAFETY_FACTOR);
+    
+    if (result) {
+      const weightAfter = result.section.weight * lengthM;
+      totalWeightAfter += weightAfter;
+      successCount++;
+      results.push({
+        memberId: member.id,
+        section: result.section,
+        maxStress: result.maxStress,
+        utilization: result.utilization,
+        safetyMargin: result.safetyMargin,
+        axialForce,
+        maxMoment
+      });
+    } else {
+      failCount++;
+      results.push({
+        memberId: member.id,
+        section: null,
+        error: '无满足要求的截面',
+        axialForce,
+        maxMoment
+      });
+    }
+  }
+
+  autoSelectResults = results;
+  renderAutoSelectResults(successCount, failCount, totalWeightBefore, totalWeightAfter);
+}
+
+function renderAutoSelectResults(successCount, failCount, weightBefore, weightAfter) {
+  const resultsDiv = document.getElementById('auto-select-results');
+  const summaryDiv = resultsDiv.querySelector('.auto-select-summary');
+  const listDiv = document.getElementById('auto-select-list');
+  
+  if (!resultsDiv || !summaryDiv || !listDiv) return;
+
+  resultsDiv.style.display = 'block';
+  
+  const weightSaved = weightBefore - weightAfter;
+  const weightSavedPct = weightBefore > 0 ? (weightSaved / weightBefore * 100).toFixed(1) : 0;
+  
+  summaryDiv.innerHTML = `
+    成功选型 ${successCount} 根${failCount > 0 ? `，失败 ${failCount} 根` : ''}<br/>
+    <small>减重: ${weightSaved.toFixed(1)} kg (${weightSavedPct}%)</small>
+  `;
+
+  let html = '';
+  for (const r of autoSelectResults) {
+    if (r.section) {
+      html += `
+        <div class="auto-select-item" data-member="${r.memberId}">
+          <div class="auto-select-item-header">
+            <span class="auto-select-item-member">杆件 #${r.memberId}</span>
+            <span class="auto-select-item-section">${r.section.name}</span>
+          </div>
+          <div class="auto-select-item-details">
+            <span>利用率: ${(r.utilization * 100).toFixed(1)}%</span>
+            <span>裕度: ${r.safetyMargin === Infinity ? '∞' : r.safetyMargin.toFixed(1)}%</span>
+          </div>
+          <div class="auto-select-item-details">
+            <span>应力: ${(r.maxStress / 1e6).toFixed(1)} MPa</span>
+            <span>${r.section.weight.toFixed(1)} kg/m</span>
+          </div>
+        </div>
+      `;
+    } else {
+      html += `
+        <div class="auto-select-item over-limit" data-member="${r.memberId}">
+          <div class="auto-select-item-header">
+            <span class="auto-select-item-member">杆件 #${r.memberId}</span>
+            <span class="auto-select-item-section">选型失败</span>
+          </div>
+          <div class="auto-select-item-details">
+            <span>${r.error}</span>
+          </div>
+        </div>
+      `;
+    }
+  }
+  
+  listDiv.innerHTML = html;
+
+  listDiv.querySelectorAll('.auto-select-item').forEach(item => {
+    item.onclick = () => {
+      const memberId = parseInt(item.dataset.member);
+      const r = autoSelectResults.find(x => x.memberId === memberId);
+      if (r && r.section) {
+        applySectionToMember(memberId, r.section.name);
+      }
+    };
+  });
+}
+
+function applyAutoSelectResults() {
+  if (!autoSelectResults) return;
+
+  let changed = false;
+  for (const r of autoSelectResults) {
+    if (r.section) {
+      const member = members.find(m => m.id === r.memberId);
+      if (member) {
+        member.A = r.section.A;
+        member.I = r.section.Ix;
+        member.h = r.section.h;
+        member.sectionName = r.section.name;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
+    hasResults = false;
+    renderer.hasResults = false;
+    frameResults = null;
+    renderer.frameResults = null;
+    envelopeData = null;
+    renderer.envelopeData = null;
+    historyManager.saveState(nodes, members);
+    updateLoadCaseList();
+    updateButtonStates();
+    render();
+    updateResultsDisplay();
+    updateEnvelopeDisplay();
+    updateSelectedMembersSectionInfo();
+    saveToStorage();
+    updateStatus('自动选型结果已应用到所有杆件');
+  }
+}
+
+function applySectionToMember(memberId, sectionName) {
+  const section = getSectionByName(sectionName);
+  if (!section) return;
+
+  const member = members.find(m => m.id === memberId);
+  if (!member) return;
+
+  member.A = section.A;
+  member.I = section.Ix;
+  member.h = section.h;
+  member.sectionName = sectionName;
+
+  loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
+  hasResults = false;
+  renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
+  envelopeData = null;
+  renderer.envelopeData = null;
+  historyManager.saveState(nodes, members);
+  updateLoadCaseList();
+  updateButtonStates();
+  render();
+  updateResultsDisplay();
+  updateEnvelopeDisplay();
+  updateSelectedMembersSectionInfo();
+  saveToStorage();
+  updateStatus(`杆件 #${memberId} 截面已更新为 ${sectionName}`);
+}
+
+function initSectionTabEvents() {
+  document.querySelectorAll('.panel-tab').forEach(tab => {
+    tab.onclick = () => {
+      switchPanelTab(tab.dataset.tab);
+    };
+  });
+
+  const searchInput = document.getElementById('section-search');
+  if (searchInput) {
+    searchInput.oninput = (e) => {
+      sectionSearchQuery = e.target.value;
+      renderSectionList();
+    };
+  }
+
+  document.querySelectorAll('.section-filter-btn').forEach(btn => {
+    btn.onclick = () => {
+      sectionFilterCategory = btn.dataset.category;
+      document.querySelectorAll('.section-filter-btn').forEach(b => {
+        b.classList.toggle('active', b === btn);
+      });
+      renderSectionList();
+    };
+  });
+
+  const sortSelect = document.getElementById('section-sort-select');
+  if (sortSelect) {
+    sortSelect.onchange = (e) => {
+      sectionSortBy = e.target.value;
+      renderSectionList();
+    };
+  }
+
+  const sortToggleBtn = document.getElementById('btn-sort-toggle');
+  if (sortToggleBtn) {
+    sortToggleBtn.onclick = () => {
+      sectionSortAscending = !sectionSortAscending;
+      sortToggleBtn.textContent = sectionSortAscending ? '↑' : '↓';
+      renderSectionList();
+    };
+  }
+
+  const autoSelectBtn = document.getElementById('btn-auto-select');
+  if (autoSelectBtn) {
+    autoSelectBtn.onclick = () => {
+      runAutoSelect();
+    };
+  }
+}
+
 function init() {
   renderer.resize();
 
@@ -2248,6 +2668,8 @@ function init() {
 
   historyManager.saveState(nodes, members);
 
+  initSectionTabEvents();
+
   render();
   updateLoadCaseList();
   updateButtonStates();
@@ -2255,6 +2677,7 @@ function init() {
   updateAnalysisModeButtons();
   updateForceDiagramButtons();
   updateSchemeList();
+  updateAutoSelectButtonState();
 }
 
 function render() {
@@ -2335,6 +2758,7 @@ function clearSelection() {
   selectedNodes.clear();
   selectedMembers.clear();
   if (sectionStressActive) hideSectionStressView();
+  updateSelectedMembersSectionInfo();
 }
 
 function selectInBox(box) {
@@ -2642,8 +3066,22 @@ function showLoadDialog(node) {
 function showMemberDialog(member) {
   const eGpa = member.E / 1e9;
   const aCm2 = member.A * 1e4;
+  const originalSectionName = member.sectionName || '';
+  const originalA = member.A;
+  const originalI = member.I;
+  const originalH = member.h;
+
+  const sectionDisplay = member.sectionName || '自定义';
+  const isCustom = !member.sectionName;
 
   let html = `
+    <div class="form-group">
+      <label>截面型号</label>
+      <div style="padding:8px 12px;background:${isCustom ? '#f5f5f5' : '#e3f2fd'};border:1px solid ${isCustom ? '#e0e0e0' : '#1976d2'};border-radius:4px;font-size:14px;color:${isCustom ? '#999' : '#1976d2'};font-weight:${isCustom ? 'normal' : '500'};">
+        ${isCustom ? '<em>自定义</em>' : sectionDisplay}
+      </div>
+      <p style="font-size:11px;color:#999;margin-top:4px;">修改A/I/h参数后将变为自定义截面</p>
+    </div>
     <div class="form-group">
       <label>弹性模量 E (GPa)</label>
       <input type="number" id="input-e" value="${eGpa}" step="1" min="0" />
@@ -2684,15 +3122,32 @@ function showMemberDialog(member) {
 
   showModal('杆件属性', html, () => {
     member.E = (parseFloat(document.getElementById('input-e').value) || 200) * 1e9;
-    member.A = (parseFloat(document.getElementById('input-a').value) || 10) * 1e-4;
+    const newA = (parseFloat(document.getElementById('input-a').value) || 10) * 1e-4;
+    member.A = newA;
+    
+    let newI = originalI;
     if (analysisMode === 'frame') {
-      member.I = (parseFloat(document.getElementById('input-i').value) || 1) * 1e-8;
+      newI = (parseFloat(document.getElementById('input-i').value) || 1) * 1e-8;
+      member.I = newI;
     }
+    
+    let newH = originalH;
     const hInput = document.getElementById('input-h');
     if (hInput) {
-      member.h = (parseFloat(hInput.value) || 20) * 1e-2;
+      newH = (parseFloat(hInput.value) || 20) * 1e-2;
+      member.h = newH;
     }
+    
     member.rho = parseFloat(document.getElementById('input-rho').value) || 7850;
+
+    const sectionChanged = Math.abs(newA - originalA) > 1e-12 || 
+                          Math.abs(newI - originalI) > 1e-12 || 
+                          Math.abs(newH - originalH) > 1e-12;
+    
+    if (sectionChanged && originalSectionName) {
+      member.sectionName = null;
+    }
+
     loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
     hasResults = false;
     renderer.hasResults = false;
@@ -2706,6 +3161,7 @@ function showMemberDialog(member) {
     render();
     updateResultsDisplay();
     updateEnvelopeDisplay();
+    updateSelectedMembersSectionInfo();
     saveToStorage();
   });
 }
@@ -3092,6 +3548,7 @@ canvas.addEventListener('mousedown', (e) => {
     mouseState.mode = 'createNode';
   }
 
+  updateSelectedMembersSectionInfo();
   render();
 });
 
@@ -3291,6 +3748,7 @@ canvas.addEventListener('mouseup', (e) => {
     }
   } else if (mouseState.mode === 'select') {
     selectInBox(selectionBox);
+    updateSelectedMembersSectionInfo();
   } else if (mouseState.mode === 'drag' && mouseState.hasMoved) {
     historyManager.saveState(nodes, members);
     updateLoadCaseList();
@@ -4746,11 +5204,17 @@ window._setStageMemberLoad = function(stageId, memberId, value) {
 
 document.querySelectorAll('.panel-tab').forEach(tab => {
   tab.addEventListener('click', () => {
+    const tabName = tab.dataset.tab;
     document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
-    const tabName = tab.dataset.tab;
     document.getElementById('tab-' + tabName).classList.add('active');
+    
+    if (tabName === 'section') {
+      renderSectionList();
+      updateSelectedMembersSectionInfo();
+      updateAutoSelectButtonState();
+    }
   });
 });
 
