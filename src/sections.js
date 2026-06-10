@@ -468,3 +468,24 @@ export function getCategories() {
   SECTIONS.forEach(s => cats.add(s.category));
   return [...cats];
 }
+
+export function calculateMaxMoment(M1, M2, q, L) {
+  let maxAbsM = Math.max(Math.abs(M1), Math.abs(M2));
+
+  if (q === 0 || L <= 0) {
+    return maxAbsM;
+  }
+
+  const a = -q / 2;
+  const c = M1;
+  const b = (M2 - M1 - a * L * L) / L;
+
+  const xVertex = -b / (2 * a);
+
+  if (xVertex > 0 && xVertex < L) {
+    const MVertex = a * xVertex * xVertex + b * xVertex + c;
+    maxAbsM = Math.max(maxAbsM, Math.abs(MVertex));
+  }
+
+  return maxAbsM;
+}

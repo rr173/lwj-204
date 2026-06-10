@@ -6,7 +6,7 @@ import { solveModal } from './src/modal.js';
 import { HistoryManager } from './src/history.js';
 import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases, createConstructionStagePreset } from './src/presets.js';
 import { TopoOptimizer } from './src/topo.js';
-import { SECTIONS, searchSections, sortSections, selectOptimalSection, getSectionByName, YIELD_STRENGTH, SAFETY_FACTOR } from './src/sections.js';
+import { SECTIONS, searchSections, sortSections, selectOptimalSection, getSectionByName, YIELD_STRENGTH, SAFETY_FACTOR, calculateMaxMoment } from './src/sections.js';
 
 const canvas = document.getElementById('canvas');
 const renderer = new Renderer(canvas);
@@ -2402,7 +2402,8 @@ function runAutoSelect() {
       const mr = frameResults.members.find(m => m.id === member.id);
       if (mr) {
         axialForce = mr.axialForce || 0;
-        maxMoment = Math.max(Math.abs(mr.M1 || 0), Math.abs(mr.M2 || 0));
+        const q = mr.q !== undefined ? mr.q : (member.q || 0);
+        maxMoment = calculateMaxMoment(mr.M1 || 0, mr.M2 || 0, q, lengthM);
       }
     }
 
@@ -2421,6 +2422,11 @@ function runAutoSelect() {
         axialForce,
         maxMoment
       });
+
+      member.A = result.section.A;
+      member.I = result.section.Ix;
+      member.h = result.section.h;
+      member.sectionName = result.section.name;
     } else {
       failCount++;
       results.push({
@@ -2433,8 +2439,26 @@ function runAutoSelect() {
     }
   }
 
+  loadCases.forEach(lc => { lc.solved = false; lc.results = null; });
+  hasResults = false;
+  renderer.hasResults = false;
+  frameResults = null;
+  renderer.frameResults = null;
+  envelopeData = null;
+  renderer.envelopeData = null;
+
+  try {
+    solveCurrentLoadCase();
+  } catch (e) {
+    console.warn('自动选型后重新求解失败:', e.message);
+  }
+
   autoSelectResults = results;
   renderAutoSelectResults(successCount, failCount, totalWeightBefore, totalWeightAfter);
+  historyManager.saveState(nodes, members);
+  saveToStorage();
+  render();
+  updateSelectedMembersSectionInfo();
 }
 
 function renderAutoSelectResults(successCount, failCount, weightBefore, weightAfter) {
