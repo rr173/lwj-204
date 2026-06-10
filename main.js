@@ -5239,6 +5239,16 @@ document.querySelectorAll('.panel-tab').forEach(tab => {
       updateSelectedMembersSectionInfo();
       updateAutoSelectButtonState();
     }
+    if (tabName === 'timehistory') {
+      updateThNodeSelects();
+      updateThObserveList();
+      setTimeout(() => {
+        if (thLoadType === 'piecewise') {
+          resizeThPiecewiseCanvas();
+          drawThPiecewiseCanvas();
+        }
+      }, 10);
+    }
   });
 });
 
@@ -5344,5 +5354,954 @@ document.getElementById('timeline-slider').addEventListener('input', (e) => {
     render();
   }
 });
+
+// ==================== 动力时程分析 ====================
+
+let timeHistoryActive = false;
+let thLoadType = 'sine';
+let thSineAmplitude = 10000;
+let thSineFrequency = 1;
+let thSineDuration = 5;
+let thPiecewisePoints = [];
+let thPiecewiseTotalTime = 5;
+let thPiecewiseMaxForce = 10000;
+let thLoadNodeId = null;
+let thLoadDirection = 'fy';
+let thObserveNodes = [];
+let thObserveDirection = 'dy';
+let thNumSteps = 200;
+let thResults = null;
+let thRunning = false;
+let thStopRequested = false;
+let thHoverTimeIdx = -1;
+let thShowDx = false;
+let thShowDy = true;
+let thPiecewiseDraggingIdx = -1;
+let thColors = ['#e65100', '#1565c0', '#2e7d32', '#f9a825', '#7b1fa2', '#c62828', '#00838f', '#ef6c00'];
+
+function getThLoadValue(t) {
+  if (thLoadType === 'sine') {
+    return thSineAmplitude * Math.sin(2 * Math.PI * thSineFrequency * t);
+  } else {
+    if (thPiecewisePoints.length < 2) return 0;
+    const pts = [...thPiecewisePoints].sort((a, b) => a.t - b.t);
+    if (t <= pts[0].t) return pts[0].f * thPiecewiseMaxForce;
+    if (t >= pts[pts.length - 1].t) return pts[pts.length - 1].f * thPiecewiseMaxForce;
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (t >= pts[i].t && t <= pts[i + 1].t) {
+        const ratio = (t - pts[i].t) / (pts[i + 1].t - pts[i].t);
+        return (pts[i].f + (pts[i + 1].f - pts[i].f) * ratio) * thPiecewiseMaxForce;
+      }
+    }
+    return 0;
+  }
+}
+
+function updateThNodeSelects() {
+  const loadSelect = document.getElementById('th-load-node');
+  const observeSelect = document.getElementById('th-observe-node-select');
+  
+  loadSelect.innerHTML = '<option value="">-- 选择节点 --</option>';
+  observeSelect.innerHTML = '<option value="">-- 选择节点 --</option>';
+  
+  nodes.forEach(node => {
+    const opt1 = document.createElement('option');
+    opt1.value = node.id;
+    opt1.textContent = `节点 #${node.id}`;
+    loadSelect.appendChild(opt1);
+    
+    const opt2 = document.createElement('option');
+    opt2.value = node.id;
+    opt2.textContent = `节点 #${node.id}`;
+    observeSelect.appendChild(opt2);
+  });
+}
+
+function updateThObserveList() {
+  const container = document.getElementById('th-observe-list');
+  container.innerHTML = '';
+  
+  if (thObserveNodes.length === 0) {
+    container.innerHTML = '<div style="font-size:11px;color:#999;padding:8px;text-align:center;">暂无观测节点</div>';
+    return;
+  }
+  
+  thObserveNodes.forEach((obs, idx) => {
+    const item = document.createElement('div');
+    item.className = 'th-observe-item';
+    
+    const info = document.createElement('div');
+    info.className = 'th-observe-item-info';
+    
+    const color = document.createElement('div');
+    color.className = 'th-observe-item-color';
+    color.style.background = thColors[idx % thColors.length];
+    
+    const label = document.createElement('span');
+    label.textContent = `节点#${obs.nodeId} - ${obs.direction === 'dx' ? '水平位移' : obs.direction === 'dy' ? '竖向位移' : '双向位移'}`;
+    
+    info.appendChild(color);
+    info.appendChild(label);
+    
+    const del = document.createElement('span');
+    del.className = 'th-observe-item-delete';
+    del.textContent = '×';
+    del.onclick = (e) => {
+      e.stopPropagation();
+      thObserveNodes.splice(idx, 1);
+      updateThObserveList();
+      if (thResults) drawTimeHistoryCurve();
+    };
+    
+    item.appendChild(info);
+    item.appendChild(del);
+    container.appendChild(item);
+  });
+}
+
+function drawThSinePreview() {
+  const canvas = document.getElementById('th-sine-preview');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+  if (W <= 0 || H <= 0) return;
+  
+  ctx.clearRect(0, 0, W, H);
+  
+  const margin = { left: 40, right: 15, top: 10, bottom: 20 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+  
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = margin.top + (plotH / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(W - margin.right, y);
+    ctx.stroke();
+  }
+  
+  ctx.strokeStyle = '#999';
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top + plotH / 2);
+  ctx.lineTo(W - margin.right, margin.top + plotH / 2);
+  ctx.stroke();
+  
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, margin.top + plotH);
+  ctx.lineTo(W - margin.right, margin.top + plotH);
+  ctx.stroke();
+  
+  const duration = thSineDuration;
+  const numCycles = thSineFrequency * duration;
+  ctx.strokeStyle = '#e65100';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i <= 100; i++) {
+    const tRatio = i / 100;
+    const t = tRatio * duration;
+    const f = Math.sin(2 * Math.PI * thSineFrequency * t);
+    const x = margin.left + tRatio * plotW;
+    const y = margin.top + plotH / 2 - f * plotH / 2;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = '#666';
+  ctx.textAlign = 'center';
+  ctx.fillText('时间(s)', margin.left + plotW / 2, H - 4);
+  ctx.textAlign = 'right';
+  ctx.fillText('F', margin.left - 4, margin.top + 8);
+  ctx.fillText('0', margin.left - 4, margin.top + plotH / 2 + 3);
+  ctx.fillText('-F', margin.left - 4, margin.top + plotH - 2);
+}
+
+function resizeThSinePreview() {
+  const canvas = document.getElementById('th-sine-preview');
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  drawThSinePreview();
+}
+
+function drawThPiecewiseCanvas() {
+  const canvas = document.getElementById('th-piecewise-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+  if (W <= 0 || H <= 0) return;
+  
+  ctx.clearRect(0, 0, W, H);
+  
+  const margin = { left: 40, right: 20, top: 10, bottom: 20 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+  
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = margin.top + (plotH / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(W - margin.right, y);
+    ctx.stroke();
+  }
+  
+  ctx.strokeStyle = '#999';
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top + plotH / 2);
+  ctx.lineTo(W - margin.right, margin.top + plotH / 2);
+  ctx.stroke();
+  
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, margin.top + plotH);
+  ctx.lineTo(W - margin.right, margin.top + plotH);
+  ctx.stroke();
+  
+  const pts = [...thPiecewisePoints].sort((a, b) => a.t - b.t);
+  if (pts.length >= 2) {
+    ctx.strokeStyle = '#e65100';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = margin.left + p.t * plotW;
+      const y = margin.top + plotH / 2 - p.f * plotH / 2;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#e65100';
+    ctx.lineWidth = 2;
+    pts.forEach((p, i) => {
+      const x = margin.left + p.t * plotW;
+      const y = margin.top + plotH / 2 - p.f * plotH / 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+  
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = '#666';
+  ctx.textAlign = 'center';
+  ctx.fillText('时间(s)', margin.left + plotW / 2, H - 4);
+  ctx.textAlign = 'right';
+  ctx.fillText('F', margin.left - 4, margin.top + 8);
+  ctx.fillText('0', margin.left - 4, margin.top + plotH / 2 + 3);
+  ctx.fillText('-F', margin.left - 4, margin.top + plotH - 2);
+}
+
+function resizeThPiecewiseCanvas() {
+  const canvas = document.getElementById('th-piecewise-canvas');
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  drawThPiecewiseCanvas();
+}
+
+function getThPiecewisePointAt(x, y) {
+  const canvas = document.getElementById('th-piecewise-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const margin = { left: 40, right: 20, top: 10, bottom: 20 };
+  const plotW = canvas.width - margin.left - margin.right;
+  const plotH = canvas.height - margin.top - margin.bottom;
+  
+  const cx = x - rect.left;
+  const cy = y - rect.top;
+  
+  for (let i = 0; i < thPiecewisePoints.length; i++) {
+    const p = thPiecewisePoints[i];
+    const px = margin.left + p.t * plotW;
+    const py = margin.top + plotH / 2 - p.f * plotH / 2;
+    const dist = Math.sqrt((cx - px) ** 2 + (cy - py) ** 2);
+    if (dist < 8) return i;
+  }
+  return -1;
+}
+
+function runTimeHistoryAnalysis() {
+  if (!thLoadNodeId) {
+    alert('请选择荷载作用节点');
+    return;
+  }
+  if (thObserveNodes.length === 0) {
+    alert('请至少添加一个观测节点');
+    return;
+  }
+  
+  const loadNode = nodes.find(n => n.id === thLoadNodeId);
+  if (!loadNode) {
+    alert('荷载节点不存在');
+    return;
+  }
+  
+  thRunning = true;
+  thStopRequested = false;
+  
+  document.getElementById('btn-th-calculate').style.display = 'none';
+  document.getElementById('btn-th-stop').style.display = 'block';
+  document.getElementById('th-progress-section').style.display = 'block';
+  document.getElementById('th-results-section').style.display = 'none';
+  
+  const savedFx = {};
+  const savedFy = {};
+  const savedM = {};
+  const savedQ = {};
+  nodes.forEach(n => { savedFx[n.id] = n.fx; savedFy[n.id] = n.fy; savedM[n.id] = n.m; });
+  members.forEach(m => { savedQ[m.id] = m.q; });
+  
+  thResults = {
+    timePoints: [],
+    nodeResults: {},
+    totalTime: thLoadType === 'sine' ? thSineDuration : thPiecewiseTotalTime
+  };
+  
+  thObserveNodes.forEach(obs => {
+    if (obs.direction === 'dx') {
+      thResults.nodeResults[obs.nodeId + '_dx'] = [];
+    } else if (obs.direction === 'dy') {
+      thResults.nodeResults[obs.nodeId + '_dy'] = [];
+    } else if (obs.direction === 'both') {
+      thResults.nodeResults[obs.nodeId + '_dx'] = [];
+      thResults.nodeResults[obs.nodeId + '_dy'] = [];
+    }
+  });
+  
+  const totalTime = thResults.totalTime;
+  const dt = totalTime / thNumSteps;
+  let currentStep = 0;
+  
+  function processStep() {
+    if (thStopRequested || currentStep > thNumSteps) {
+      finishAnalysis();
+      return;
+    }
+    
+    const t = currentStep * dt;
+    thResults.timePoints.push(t);
+    
+    const loadValue = getThLoadValue(t);
+    
+    nodes.forEach(n => { n.fx = 0; n.fy = 0; n.m = 0; });
+    members.forEach(m => { m.q = 0; });
+    
+    if (thLoadDirection === 'fx') {
+      loadNode.fx = loadValue;
+    } else {
+      loadNode.fy = loadValue;
+    }
+    
+    let result;
+    try {
+      if (analysisMode === 'frame') {
+        result = solveFrame(nodes, members);
+      } else {
+        result = solveTruss(nodes, members);
+      }
+      
+      thObserveNodes.forEach(obs => {
+        const rn = result.nodes.find(n => n.id === obs.nodeId);
+        if (rn) {
+          if (obs.direction === 'dx') {
+            thResults.nodeResults[obs.nodeId + '_dx'].push(rn.dx);
+          } else if (obs.direction === 'dy') {
+            thResults.nodeResults[obs.nodeId + '_dy'].push(rn.dy);
+          } else if (obs.direction === 'both') {
+            thResults.nodeResults[obs.nodeId + '_dx'].push(rn.dx);
+            thResults.nodeResults[obs.nodeId + '_dy'].push(rn.dy);
+          }
+        }
+      });
+    } catch (e) {
+      thObserveNodes.forEach(obs => {
+        if (obs.direction === 'dx' || obs.direction === 'both') {
+          thResults.nodeResults[obs.nodeId + '_dx'].push(0);
+        }
+        if (obs.direction === 'dy' || obs.direction === 'both') {
+          thResults.nodeResults[obs.nodeId + '_dy'].push(0);
+        }
+      });
+    }
+    
+    currentStep++;
+    const progress = Math.floor((currentStep / thNumSteps) * 100);
+    document.getElementById('th-progress-fill').style.width = progress + '%';
+    document.getElementById('th-progress-text').textContent = progress + '%';
+    
+    if (currentStep % 5 === 0 || currentStep === thNumSteps) {
+      drawTimeHistoryCurve();
+    }
+    
+    requestAnimationFrame(processStep);
+  }
+  
+  function finishAnalysis() {
+    thRunning = false;
+    
+    nodes.forEach(n => { n.fx = savedFx[n.id]; n.fy = savedFy[n.id]; n.m = savedM[n.id]; });
+    members.forEach(m => { m.q = savedQ[m.id]; });
+    
+    const lc = getCurrentLoadCase();
+    if (lc && lc.solved && lc.results) {
+      restoreResults(lc.results);
+    }
+    
+    document.getElementById('btn-th-calculate').style.display = 'block';
+    document.getElementById('btn-th-stop').style.display = 'none';
+    document.getElementById('th-results-section').style.display = 'block';
+    
+    updateThResultSummary();
+    drawTimeHistoryCurve();
+    render();
+    updateStatus('时程分析完成');
+  }
+  
+  requestAnimationFrame(processStep);
+}
+
+function stopTimeHistoryAnalysis() {
+  thStopRequested = true;
+}
+
+function updateThResultSummary() {
+  const container = document.getElementById('th-result-summary');
+  if (!thResults) {
+    container.innerHTML = '';
+    return;
+  }
+  
+  let html = '';
+  thObserveNodes.forEach((obs, idx) => {
+    const keys = [];
+    if (obs.direction === 'dx' || obs.direction === 'both') {
+      keys.push({ key: obs.nodeId + '_dx', label: '水平位移 Dx' });
+    }
+    if (obs.direction === 'dy' || obs.direction === 'both') {
+      keys.push({ key: obs.nodeId + '_dy', label: '竖向位移 Dy' });
+    }
+    
+    keys.forEach(k => {
+      const values = thResults.nodeResults[k.key];
+      if (!values || values.length === 0) return;
+      
+      let maxVal = -Infinity;
+      let minVal = Infinity;
+      let maxIdx = 0;
+      let minIdx = 0;
+      values.forEach((v, i) => {
+        if (v > maxVal) { maxVal = v; maxIdx = i; }
+        if (v < minVal) { minVal = v; minIdx = i; }
+      });
+      
+      html += `<div class="result-item">`;
+      html += `<strong style="color:${thColors[idx % thColors.length]}">节点#${obs.nodeId} ${k.label}</strong><br/>`;
+      html += `最大: ${(maxVal * 1000).toFixed(3)} mm (t=${thResults.timePoints[maxIdx].toFixed(3)}s)<br/>`;
+      html += `最小: ${(minVal * 1000).toFixed(3)} mm (t=${thResults.timePoints[minIdx].toFixed(3)}s)`;
+      html += `</div>`;
+    });
+  });
+  
+  container.innerHTML = html;
+}
+
+function drawTimeHistoryCurve() {
+  const canvas = document.getElementById('time-history-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+  if (W <= 0 || H <= 0) return;
+  if (!thResults || !thResults.timePoints || thResults.timePoints.length === 0) return;
+  
+  ctx.clearRect(0, 0, W, H);
+  
+  const margin = { left: 70, right: 20, top: 20, bottom: 40 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+  if (plotW <= 0 || plotH <= 0) return;
+  
+  const times = thResults.timePoints;
+  const maxT = times[times.length - 1];
+  const minT = 0;
+  const rangeT = maxT - minT || 1;
+  
+  let allMax = 0;
+  let allMin = 0;
+  thObserveNodes.forEach((obs, idx) => {
+    const keys = [];
+    if (obs.direction === 'dx' || obs.direction === 'both') {
+      if (thShowDx) keys.push(obs.nodeId + '_dx');
+    }
+    if (obs.direction === 'dy' || obs.direction === 'both') {
+      if (thShowDy) keys.push(obs.nodeId + '_dy');
+    }
+    keys.forEach(k => {
+      const vals = thResults.nodeResults[k];
+      if (vals && vals.length > 0) {
+        vals.forEach(v => {
+          if (v > allMax) allMax = v;
+          if (v < allMin) allMin = v;
+        });
+      }
+    });
+  });
+  
+  const absMax = Math.max(Math.abs(allMax), Math.abs(allMin), 1e-10);
+  const valRange = Math.max(allMax - allMin, absMax * 0.2);
+  const valCenter = (allMax + allMin) / 2;
+  const halfRange = Math.max(valRange / 2, absMax * 0.6);
+  
+  const mapX = (t) => margin.left + ((t - minT) / rangeT) * plotW;
+  const mapY = (v) => margin.top + plotH / 2 - (v / (halfRange * 2)) * plotH;
+  
+  ctx.strokeStyle = '#f0f0f0';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 5; i++) {
+    const y = margin.top + (plotH / 5) * i;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(W - margin.right, y);
+    ctx.stroke();
+  }
+  
+  const zeroY = mapY(0);
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, zeroY);
+  ctx.lineTo(W - margin.right, zeroY);
+  ctx.stroke();
+  
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, margin.top + plotH);
+  ctx.lineTo(W - margin.right, margin.top + plotH);
+  ctx.stroke();
+  
+  let colorIdx = 0;
+  thObserveNodes.forEach((obs, idx) => {
+    const keys = [];
+    if (obs.direction === 'dx' || obs.direction === 'both') {
+      if (thShowDx) keys.push(obs.nodeId + '_dx');
+    }
+    if (obs.direction === 'dy' || obs.direction === 'both') {
+      if (thShowDy) keys.push(obs.nodeId + '_dy');
+    }
+    
+    keys.forEach((k, ki) => {
+      const vals = thResults.nodeResults[k];
+      if (!vals || vals.length === 0) return;
+      
+      const color = thColors[idx % thColors.length];
+      const isDashed = k.endsWith('_dx');
+      
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      if (isDashed) ctx.setLineDash([6, 4]);
+      
+      ctx.beginPath();
+      for (let i = 0; i < vals.length && i < times.length; i++) {
+        const x = mapX(times[i]);
+        const y = mapY(vals[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      
+      colorIdx++;
+    });
+  });
+  
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#666';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= 4; i++) {
+    const v = valCenter + halfRange * (1 - i / 2);
+    const y = margin.top + (plotH / 4) * i;
+    if (y > margin.top && y < margin.top + plotH) {
+      ctx.fillText(`${(v * 1000).toFixed(2)} mm`, margin.left - 6, y);
+    }
+  }
+  
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const numTicks = Math.min(8, times.length);
+  for (let i = 0; i <= numTicks; i++) {
+    const t = minT + (rangeT / numTicks) * i;
+    const x = mapX(t);
+    ctx.fillText(t.toFixed(1) + 's', x, margin.top + plotH + 6);
+  }
+  
+  ctx.fillText('时间 (s)', margin.left + plotW / 2, H - 14);
+  
+  ctx.save();
+  ctx.translate(14, margin.top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillText('位移 (mm)', 0, 0);
+  ctx.restore();
+  
+  if (thHoverTimeIdx >= 0 && thHoverTimeIdx < times.length) {
+    const hx = mapX(times[thHoverTimeIdx]);
+    
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(hx, margin.top);
+    ctx.lineTo(hx, margin.top + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    let tooltipHtml = `<strong>t = ${times[thHoverTimeIdx].toFixed(3)}s</strong><br/>`;
+    thObserveNodes.forEach((obs, idx) => {
+      const color = thColors[idx % thColors.length];
+      if (obs.direction === 'dx' || obs.direction === 'both') {
+        if (thShowDx) {
+          const v = thResults.nodeResults[obs.nodeId + '_dx'];
+          if (v && v[thHoverTimeIdx] !== undefined) {
+            tooltipHtml += `<span style="color:${color}">节点#${obs.nodeId} Dx: ${(v[thHoverTimeIdx] * 1000).toFixed(3)} mm</span><br/>`;
+          }
+        }
+      }
+      if (obs.direction === 'dy' || obs.direction === 'both') {
+        if (thShowDy) {
+          const v = thResults.nodeResults[obs.nodeId + '_dy'];
+          if (v && v[thHoverTimeIdx] !== undefined) {
+            tooltipHtml += `<span style="color:${color}">节点#${obs.nodeId} Dy: ${(v[thHoverTimeIdx] * 1000).toFixed(3)} mm</span><br/>`;
+          }
+        }
+      }
+    });
+    
+    const tooltip = document.getElementById('th-tooltip');
+    tooltip.innerHTML = tooltipHtml;
+    tooltip.classList.remove('hidden');
+    
+    const panel = document.getElementById('time-history-panel');
+    const panelRect = panel.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    
+    let tipX = canvasRect.left - panelRect.left + hx + 10;
+    let tipY = canvasRect.top - panelRect.top + 20;
+    
+    if (tipX + tooltipRect.width > panelRect.width) {
+      tipX = canvasRect.left - panelRect.left + hx - tooltipRect.width - 10;
+    }
+    
+    tooltip.style.left = tipX + 'px';
+    tooltip.style.top = tipY + 'px';
+  } else {
+    document.getElementById('th-tooltip').classList.add('hidden');
+  }
+}
+
+function resizeTimeHistoryCanvas() {
+  const panel = document.getElementById('time-history-panel');
+  const canvas = document.getElementById('time-history-canvas');
+  const header = panel.querySelector('.time-history-panel-header');
+  canvas.width = panel.clientWidth;
+  canvas.height = panel.clientHeight - header.offsetHeight;
+  if (thResults) drawTimeHistoryCurve();
+}
+
+function enterTimeHistoryMode() {
+  if (modalActive) exitModalMode();
+  if (influenceActive) exitInfluenceMode();
+  if (constructionActive) exitConstructionMode();
+  if (sectionStressActive) hideSectionStressView();
+  if (topoActive) exitTopoMode();
+  if (compareActive) exitCompareMode();
+  
+  timeHistoryActive = true;
+  document.getElementById('btn-time-history').classList.add('active');
+  document.getElementById('time-history-panel').classList.remove('hidden');
+  
+  updateThNodeSelects();
+  updateThObserveList();
+  
+  setTimeout(() => {
+    resizeTimeHistoryCanvas();
+    resizeThPiecewiseCanvas();
+    drawThPiecewiseCanvas();
+  }, 10);
+  
+  render();
+  updateStatus('动力时程分析模式');
+}
+
+function exitTimeHistoryMode() {
+  timeHistoryActive = false;
+  thRunning = false;
+  thStopRequested = true;
+  document.getElementById('btn-time-history').classList.remove('active');
+  document.getElementById('time-history-panel').classList.add('hidden');
+  document.getElementById('th-tooltip').classList.add('hidden');
+  
+  render();
+}
+
+document.getElementById('btn-time-history').addEventListener('click', () => {
+  if (timeHistoryActive) {
+    exitTimeHistoryMode();
+  } else {
+    enterTimeHistoryMode();
+  }
+});
+
+document.querySelectorAll('input[name="th-load-type"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    thLoadType = e.target.value;
+    document.getElementById('th-sine-config').style.display = thLoadType === 'sine' ? 'block' : 'none';
+    document.getElementById('th-piecewise-config').style.display = thLoadType === 'piecewise' ? 'block' : 'none';
+    if (thLoadType === 'piecewise') {
+      setTimeout(() => {
+        resizeThPiecewiseCanvas();
+        drawThPiecewiseCanvas();
+      }, 10);
+    }
+  });
+});
+
+['th-sine-amplitude', 'th-sine-frequency', 'th-sine-duration'].forEach(id => {
+  document.getElementById(id).addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    if (isNaN(val)) return;
+    if (id === 'th-sine-amplitude') thSineAmplitude = val;
+    if (id === 'th-sine-frequency') thSineFrequency = val;
+    if (id === 'th-sine-duration') thSineDuration = val;
+  });
+});
+
+['th-piecewise-total-time', 'th-piecewise-max-force'].forEach(id => {
+  document.getElementById(id).addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    if (isNaN(val)) return;
+    if (id === 'th-piecewise-total-time') thPiecewiseTotalTime = val;
+    if (id === 'th-piecewise-max-force') thPiecewiseMaxForce = val;
+    drawThPiecewiseCanvas();
+  });
+});
+
+document.getElementById('th-load-node').addEventListener('change', (e) => {
+  thLoadNodeId = e.target.value ? parseInt(e.target.value) : null;
+});
+
+document.getElementById('th-load-direction').addEventListener('change', (e) => {
+  thLoadDirection = e.target.value;
+});
+
+document.getElementById('th-observe-direction').addEventListener('change', (e) => {
+  thObserveDirection = e.target.value;
+});
+
+document.getElementById('btn-th-add-observe').addEventListener('click', () => {
+  const select = document.getElementById('th-observe-node-select');
+  const nodeId = select.value ? parseInt(select.value) : null;
+  if (!nodeId) {
+    alert('请选择观测节点');
+    return;
+  }
+  const exists = thObserveNodes.some(o => o.nodeId === nodeId && o.direction === thObserveDirection);
+  if (exists) {
+    alert('该观测已存在');
+    return;
+  }
+  thObserveNodes.push({ nodeId, direction: thObserveDirection });
+  updateThObserveList();
+  if (thResults) drawTimeHistoryCurve();
+});
+
+document.getElementById('th-num-steps').addEventListener('change', (e) => {
+  thNumSteps = parseInt(e.target.value) || 200;
+});
+
+document.getElementById('btn-th-calculate').addEventListener('click', () => {
+  runTimeHistoryAnalysis();
+});
+
+document.getElementById('btn-th-stop').addEventListener('click', () => {
+  stopTimeHistoryAnalysis();
+});
+
+document.getElementById('btn-th-panel-close').addEventListener('click', () => {
+  exitTimeHistoryMode();
+});
+
+document.getElementById('th-show-dx').addEventListener('change', (e) => {
+  thShowDx = e.target.checked;
+  if (thResults) drawTimeHistoryCurve();
+});
+
+document.getElementById('th-show-dy').addEventListener('change', (e) => {
+  thShowDy = e.target.checked;
+  if (thResults) drawTimeHistoryCurve();
+});
+
+const thCanvas = document.getElementById('time-history-canvas');
+thCanvas.addEventListener('mousemove', (e) => {
+  if (!thResults || !thResults.timePoints || thResults.timePoints.length === 0) return;
+  
+  const rect = thCanvas.getBoundingClientRect();
+  const margin = { left: 70, right: 20, top: 20, bottom: 40 };
+  const plotW = thCanvas.width - margin.left - margin.right;
+  
+  const x = e.clientX - rect.left;
+  if (x < margin.left || x > thCanvas.width - margin.right) {
+    if (thHoverTimeIdx !== -1) {
+      thHoverTimeIdx = -1;
+      drawTimeHistoryCurve();
+    }
+    return;
+  }
+  
+  const t = ((x - margin.left) / plotW) * thResults.totalTime;
+  let closestIdx = 0;
+  let closestDist = Infinity;
+  thResults.timePoints.forEach((tp, i) => {
+    const dist = Math.abs(tp - t);
+    if (dist < closestDist) {
+      closestDist = dist;
+      closestIdx = i;
+    }
+  });
+  
+  if (closestIdx !== thHoverTimeIdx) {
+    thHoverTimeIdx = closestIdx;
+    drawTimeHistoryCurve();
+  }
+});
+
+thCanvas.addEventListener('mouseleave', () => {
+  if (thHoverTimeIdx !== -1) {
+    thHoverTimeIdx = -1;
+    drawTimeHistoryCurve();
+  }
+});
+
+document.getElementById('btn-th-add-point').addEventListener('click', () => {
+  if (thPiecewisePoints.length >= 10) {
+    alert('最多添加10个控制点');
+    return;
+  }
+  const t = thPiecewisePoints.length > 0 
+    ? Math.min(1, thPiecewisePoints[thPiecewisePoints.length - 1].t + 0.2)
+    : 0.5;
+  thPiecewisePoints.push({ t, f: 0.5 });
+  drawThPiecewiseCanvas();
+});
+
+document.getElementById('btn-th-clear-points').addEventListener('click', () => {
+  thPiecewisePoints = [];
+  initDefaultPiecewisePoints();
+  drawThPiecewiseCanvas();
+});
+
+function initDefaultPiecewisePoints() {
+  thPiecewisePoints = [
+    { t: 0, f: 0 },
+    { t: 0.2, f: 1 },
+    { t: 0.5, f: 0.5 },
+    { t: 0.8, f: -0.5 },
+    { t: 1, f: 0 }
+  ];
+}
+
+const pwCanvas = document.getElementById('th-piecewise-canvas');
+pwCanvas.addEventListener('mousedown', (e) => {
+  const idx = getThPiecewisePointAt(e.clientX, e.clientY);
+  if (idx >= 0) {
+    thPiecewiseDraggingIdx = idx;
+    pwCanvas.style.cursor = 'grabbing';
+  } else {
+    const canvas = document.getElementById('th-piecewise-canvas');
+    const rect = canvas.getBoundingClientRect();
+    const margin = { left: 40, right: 20, top: 10, bottom: 20 };
+    const plotW = canvas.width - margin.left - margin.right;
+    const plotH = canvas.height - margin.top - margin.bottom;
+    
+    let t = (e.clientX - rect.left - margin.left) / plotW;
+    let f = 1 - (e.clientY - rect.top - margin.top) / (plotH / 2);
+    
+    t = Math.max(0, Math.min(1, t));
+    f = Math.max(-1, Math.min(1, f));
+    
+    thPiecewisePoints.push({ t, f });
+    drawThPiecewiseCanvas();
+  }
+});
+
+pwCanvas.addEventListener('mousemove', (e) => {
+  if (thPiecewiseDraggingIdx >= 0) {
+    const canvas = document.getElementById('th-piecewise-canvas');
+    const rect = canvas.getBoundingClientRect();
+    const margin = { left: 40, right: 20, top: 10, bottom: 20 };
+    const plotW = canvas.width - margin.left - margin.right;
+    const plotH = canvas.height - margin.top - margin.bottom;
+    
+    let t = (e.clientX - rect.left - margin.left) / plotW;
+    let f = 1 - (e.clientY - rect.top - margin.top) / (plotH / 2);
+    
+    t = Math.max(0, Math.min(1, t));
+    f = Math.max(-1, Math.min(1, f));
+    
+    thPiecewisePoints[thPiecewiseDraggingIdx].t = t;
+    thPiecewisePoints[thPiecewiseDraggingIdx].f = f;
+    drawThPiecewiseCanvas();
+  } else {
+    const idx = getThPiecewisePointAt(e.clientX, e.clientY);
+    pwCanvas.style.cursor = idx >= 0 ? 'grab' : 'crosshair';
+  }
+});
+
+pwCanvas.addEventListener('mouseup', () => {
+  thPiecewiseDraggingIdx = -1;
+  pwCanvas.style.cursor = 'crosshair';
+});
+
+pwCanvas.addEventListener('mouseleave', () => {
+  thPiecewiseDraggingIdx = -1;
+  pwCanvas.style.cursor = 'crosshair';
+});
+
+pwCanvas.addEventListener('dblclick', (e) => {
+  const idx = getThPiecewisePointAt(e.clientX, e.clientY);
+  if (idx >= 0 && thPiecewisePoints.length > 2) {
+    thPiecewisePoints.splice(idx, 1);
+    drawThPiecewiseCanvas();
+  }
+});
+
+window.addEventListener('resize', () => {
+  if (timeHistoryActive) {
+    resizeTimeHistoryCanvas();
+    if (thLoadType === 'piecewise') {
+      resizeThPiecewiseCanvas();
+    }
+  }
+});
+
+initDefaultPiecewisePoints();
 
 init();

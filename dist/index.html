@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>结构力学分析器 - 桁架/刚架</title>
-  <script type="module" crossorigin src="/assets/index-DyKh7_DI.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-B-SCjuPn.css">
+  <script type="module" crossorigin src="/assets/index-CGKwlPZW.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-C-cLSRmM.css">
 </head>
 <body>
   <div class="app-container">
@@ -21,6 +21,7 @@
         <button id="btn-influence" class="btn btn-influence">影响线</button>
         <button id="btn-construction" class="btn btn-construction">施工阶段</button>
         <button id="btn-topo" class="btn btn-topo">拓扑优化</button>
+        <button id="btn-timehistory" class="btn btn-timehistory">动力时程</button>
         <button id="btn-compare" class="btn btn-compare">方案对比</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
@@ -104,6 +105,7 @@
         <div class="panel-tab active" data-tab="general">工况管理</div>
         <div class="panel-tab" data-tab="construction">施工阶段</div>
         <div class="panel-tab" data-tab="section">截面库</div>
+        <div class="panel-tab" data-tab="timehistory">动力时程</div>
       </div>
 
       <div id="tab-general" class="tab-content active">
@@ -175,6 +177,68 @@
         <div id="selected-members-section-info" class="selected-members-section-info">
           <div class="no-selection-hint">未选中杆件</div>
         </div>
+      </div>
+      </div>
+
+      <div id="tab-timehistory" class="tab-content">
+      <div class="panel-section">
+        <h3>时变荷载定义</h3>
+        <div class="th-load-type-group">
+          <button id="btn-th-polyline" class="btn btn-small th-type-btn active" data-type="polyline">折线</button>
+          <button id="btn-th-sine" class="btn btn-small th-type-btn" data-type="sine">正弦</button>
+        </div>
+        <div id="th-polyline-section">
+          <div class="th-canvas-wrap">
+            <canvas id="th-polyline-canvas" width="216" height="120"></canvas>
+          </div>
+          <div class="th-polyline-hint">点击画布添加控制点，拖拽调整</div>
+        </div>
+        <div id="th-sine-section" style="display:none;">
+          <div class="th-sine-params">
+            <label>振幅 (N): <input type="number" id="th-sine-amp" value="10000" step="1000" /></label>
+            <label>频率 (Hz): <input type="number" id="th-sine-freq" value="1" step="0.1" min="0.01" /></label>
+            <label>持续时间 (s): <input type="number" id="th-sine-dur" value="5" step="0.5" min="0.1" /></label>
+          </div>
+          <div class="th-canvas-wrap">
+            <canvas id="th-sine-preview-canvas" width="216" height="80"></canvas>
+          </div>
+        </div>
+        <div class="th-target-section">
+          <label class="th-target-label">作用节点:
+            <select id="th-target-node"></select>
+          </label>
+          <label class="th-target-label">方向:
+            <select id="th-target-dir">
+              <option value="fx">Fx (水平)</option>
+              <option value="fy">Fy (竖向)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>观测节点</h3>
+        <div class="th-observer-section">
+          <div id="th-observer-list" class="th-observer-list"></div>
+          <button id="btn-th-add-observer" class="btn btn-small" style="width:100%;margin-top:4px;">+ 添加观测节点</button>
+        </div>
+      </div>
+      <div class="panel-section">
+        <div class="th-actions">
+          <button id="btn-th-calc" class="btn btn-small btn-primary" style="flex:1;">时程计算</button>
+          <button id="btn-th-stop" class="btn btn-small" style="display:none;">停止</button>
+          <button id="btn-th-exit" class="btn btn-small">退出</button>
+        </div>
+        <div id="th-progress" style="display:none;" class="th-progress">
+          <div class="th-progress-bar"><div id="th-progress-fill" class="th-progress-fill"></div></div>
+          <span id="th-progress-text" class="th-progress-text">0%</span>
+        </div>
+      </div>
+      <div class="panel-section" id="th-result-section" style="display:none;">
+        <h3>位移时程曲线</h3>
+        <div class="th-canvas-wrap th-result-wrap">
+          <canvas id="th-result-canvas" width="216" height="160"></canvas>
+        </div>
+        <div id="th-result-tooltip" class="th-result-tooltip hidden"></div>
       </div>
       </div>
 

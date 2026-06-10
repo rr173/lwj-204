@@ -21,6 +21,7 @@
         <button id="btn-construction" class="btn btn-construction">施工阶段</button>
         <button id="btn-topo" class="btn btn-topo">拓扑优化</button>
         <button id="btn-compare" class="btn btn-compare">方案对比</button>
+        <button id="btn-time-history" class="btn btn-time-history">动力时程</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -97,12 +98,30 @@
       </div>
       <canvas id="influence-canvas"></canvas>
     </div>
+
+    <div id="time-history-panel" class="time-history-panel hidden">
+      <div class="time-history-panel-header">
+        <span class="time-history-panel-title">节点位移时程曲线</span>
+        <div class="time-history-panel-controls">
+          <label>
+            <input type="checkbox" id="th-show-dx" /> 显示水平位移 (Dx)
+          </label>
+          <label>
+            <input type="checkbox" id="th-show-dy" checked /> 显示竖向位移 (Dy)
+          </label>
+          <button id="btn-th-panel-close" class="btn btn-small">隐藏</button>
+        </div>
+      </div>
+      <canvas id="time-history-canvas"></canvas>
+      <div id="th-tooltip" class="th-tooltip hidden"></div>
+    </div>
     
     <div class="info-panel">
       <div class="panel-tabs">
         <div class="panel-tab active" data-tab="general">工况管理</div>
         <div class="panel-tab" data-tab="construction">施工阶段</div>
         <div class="panel-tab" data-tab="section">截面库</div>
+        <div class="panel-tab" data-tab="timehistory">动力时程</div>
       </div>
 
       <div id="tab-general" class="tab-content active">
@@ -174,6 +193,95 @@
         <div id="selected-members-section-info" class="selected-members-section-info">
           <div class="no-selection-hint">未选中杆件</div>
         </div>
+      </div>
+      </div>
+
+      <div id="tab-timehistory" class="tab-content">
+      <div class="panel-section">
+        <h3>时程荷载定义</h3>
+        <div class="th-load-type-group">
+          <label><input type="radio" name="th-load-type" value="sine" checked /> 正弦荷载</label>
+          <label><input type="radio" name="th-load-type" value="piecewise" /> 折线荷载</label>
+        </div>
+        <div id="th-sine-config" class="th-config-section">
+          <canvas id="th-sine-preview" class="th-sine-preview"></canvas>
+          <div class="th-param-row">
+            <label>振幅 (N): <input type="number" id="th-sine-amplitude" value="10000" step="1000" min="0" /></label>
+          </div>
+          <div class="th-param-row">
+            <label>频率 (Hz): <input type="number" id="th-sine-frequency" value="1" step="0.1" min="0.01" /></label>
+          </div>
+          <div class="th-param-row">
+            <label>持续时间 (s): <input type="number" id="th-sine-duration" value="5" step="0.5" min="0.1" /></label>
+          </div>
+        </div>
+        <div id="th-piecewise-config" class="th-config-section" style="display:none;">
+          <canvas id="th-piecewise-canvas" class="th-piecewise-canvas"></canvas>
+          <div class="th-piecewise-controls">
+            <button id="btn-th-add-point" class="btn btn-small">添加控制点</button>
+            <button id="btn-th-clear-points" class="btn btn-small">清除所有</button>
+          </div>
+          <div class="th-param-row">
+            <label>总时间 (s): <input type="number" id="th-piecewise-total-time" value="5" step="0.5" min="0.1" /></label>
+          </div>
+          <div class="th-param-row">
+            <label>最大力 (N): <input type="number" id="th-piecewise-max-force" value="10000" step="1000" min="0" /></label>
+          </div>
+        </div>
+        <div class="th-param-row">
+          <label>作用节点:
+            <select id="th-load-node">
+              <option value="">-- 选择节点 --</option>
+            </select>
+          </label>
+        </div>
+        <div class="th-param-row">
+          <label>荷载方向:
+            <select id="th-load-direction">
+              <option value="fy">Fy (竖向)</option>
+              <option value="fx">Fx (水平)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>观测节点</h3>
+        <div class="th-observe-list" id="th-observe-list"></div>
+        <div class="th-param-row">
+          <label>添加观测:
+            <select id="th-observe-node-select">
+              <option value="">-- 选择节点 --</option>
+            </select>
+          </label>
+          <button id="btn-th-add-observe" class="btn btn-small">添加</button>
+        </div>
+        <div class="th-param-row">
+          <label>观测方向:
+            <select id="th-observe-direction">
+              <option value="dy">Dy (竖向位移)</option>
+              <option value="dx">Dx (水平位移)</option>
+              <option value="both">两者都测</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>时程计算</h3>
+        <div class="th-param-row">
+          <label>时间步数: <input type="number" id="th-num-steps" value="200" min="50" max="2000" step="10" /></label>
+        </div>
+        <div class="th-progress-section" id="th-progress-section" style="display:none;">
+          <div class="th-progress-bar">
+            <div class="th-progress-fill" id="th-progress-fill"></div>
+          </div>
+          <div class="th-progress-text" id="th-progress-text">0%</div>
+        </div>
+        <button id="btn-th-calculate" class="btn btn-small btn-primary" style="width:100%;">开始时程计算</button>
+        <button id="btn-th-stop" class="btn btn-small" style="width:100%;display:none;margin-top:4px;">停止计算</button>
+      </div>
+      <div class="panel-section" id="th-results-section" style="display:none;">
+        <h3>时程结果</h3>
+        <div class="th-result-summary" id="th-result-summary"></div>
       </div>
       </div>
 
