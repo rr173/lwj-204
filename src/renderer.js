@@ -159,11 +159,11 @@ export class Renderer {
       this.drawEnvelopeLabels(member, node1, node2, envelopeInfo);
     }
 
-    if (this.hasResults && this.showDeformed && this.viewMode === 'single') {
+    if (this.hasResults && this.showDeformed && this.viewMode === 'single' && !this.bucklingMode) {
       this.drawDeformedMember(member, node1, node2);
     }
 
-    if (this.hasResults && this.analysisMode === 'frame' && this.frameResults) {
+    if (this.hasResults && this.analysisMode === 'frame' && this.frameResults && !this.bucklingMode) {
       const mr = this.frameResults.members.find(m => m.id === member.id);
       if (mr) {
         if (this.forceDiagramType === 'moment') {

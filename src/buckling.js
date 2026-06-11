@@ -254,7 +254,8 @@ function inverseIterationBuckling(Kff, Kgff, numModes, maxIter = 300, tol = 1e-1
       const denom = dotProduct(xNew, KgxNew);
       if (Math.abs(denom) < 1e-30) break;
       const ratio = dotProduct(xNew, Kx) / denom;
-      const newEigenvalue = Math.abs(ratio);
+      let newEigenvalue = -ratio;
+      if (newEigenvalue <= 0) newEigenvalue = Math.abs(newEigenvalue) + 1e-12;
 
       if (iter > 0 && Math.abs(newEigenvalue - eigenvalue) < tol * Math.max(Math.abs(newEigenvalue), 1)) {
         eigenvalue = newEigenvalue;
@@ -286,18 +287,67 @@ function inverseIterationBuckling(Kff, Kgff, numModes, maxIter = 300, tol = 1e-1
     const Kx = matrixVectorMultiply(Kff, modeShape);
     const Kgx = matrixVectorMultiply(Kgff, modeShape);
     const denom = dotProduct(modeShape, Kgx);
-    const ratio = Math.abs(denom) > 1e-20 ? dotProduct(modeShape, Kx) / denom : eigenvalues[idx] || 0;
-    const eigenvalue = Math.abs(ratio);
+    let eigenvalue = eigenvalues[idx] || 0;
+    if (Math.abs(denom) > 1e-20) {
+      const ratio = dotProduct(modeShape, Kx) / denom;
+      eigenvalue = -ratio;
+      if (eigenvalue <= 0) eigenvalue = Math.abs(eigenvalue) + 1e-12;
+    }
 
     return {
       modeNumber: idx + 1,
       lambda: eigenvalue,
       modeShape
     };
-  }).filter(m => isFinite(m.lambda));
+  }).filter(m => isFinite(m.lambda) && m.lambda > 1e-12).sort((a, b) => a.lambda - b.lambda);
 }
 
-function calculateEffectiveLength(member, node1, node2, analysisMode, lambdaCrit, axialForceMap) {
+function calculateEndRotationalConstraint(member, node, endIndex, allMembers, allNodes) {
+  const nodeMap = new Map();
+  allNodes.forEach(n => nodeMap.set(n.id, n));
+
+  if (endIndex === 1 && member.release1) return 0;
+  if (endIndex === 2 && member.release2) return 0;
+
+  if (node.support === 'fixed') return 1.0;
+  if (node.support === 'pinned' || node.support === 'roller') return 0;
+
+  const connectedMembers = allMembers.filter(m =>
+    (m.id !== member.id) && (m.node1Id === node.id || m.node2Id === node.id)
+  );
+
+  if (connectedMembers.length === 0) return -1;
+
+  const lengthInMeters = member.length * PIXEL_TO_METER;
+  const L_col = lengthInMeters;
+  const EI_col = member.E * (member.I || 0);
+  const k_col = L_col > 0 && EI_col > 0 ? EI_col / L_col : 0;
+
+  let k_others = 0;
+  for (const om of connectedMembers) {
+    const omL = om.length * PIXEL_TO_METER;
+    const omEI = om.E * (om.I || 0);
+    if (omL > 0 && omEI > 0) {
+      k_others += omEI / omL;
+    }
+  }
+
+  if (k_col <= 0) return 0.5;
+
+  const ratio = k_others / (k_col + k_others);
+  return Math.min(1.0, ratio * 2);
+}
+
+function calculateTheoreticalMu(R1, R2, isFree1, isFree2) {
+  if ((isFree1 && R1 <= 0) || (isFree2 && R2 <= 0)) {
+    if (!isFree1 && R1 > 0.5) return 2.0;
+    if (!isFree2 && R2 > 0.5) return 2.0;
+    return 2.0;
+  }
+  return 1.0 - 0.3 * R1 - 0.3 * R2 + 0.1 * R1 * R2;
+}
+
+function calculateEffectiveLength(member, node1, node2, analysisMode, lambdaCrit, axialForceMap, allMembers, allNodes) {
   const L = member.length * PIXEL_TO_METER;
   let N = member.axialForce || 0;
   if (axialForceMap && axialForceMap.has && axialForceMap.has(member.id)) {
@@ -309,24 +359,33 @@ function calculateEffectiveLength(member, node1, node2, analysisMode, lambdaCrit
 
   if (analysisMode !== 'frame' || I <= 0) {
     const EulerNcr = N < 0 ? Math.PI * Math.PI * E * A / (L * L) : 0;
-    return { mu: 1.0, Pcr: EulerNcr };
+    return { mu: 1.0, Pcr: EulerNcr, muTheory: 1.0 };
   }
+
+  let R1 = calculateEndRotationalConstraint(member, node1, 1, allMembers, allNodes);
+  let R2 = calculateEndRotationalConstraint(member, node2, 2, allMembers, allNodes);
+
+  const isFree1 = R1 < 0;
+  const isFree2 = R2 < 0;
+  if (R1 < 0) R1 = 0;
+  if (R2 < 0) R2 = 0;
+
+  const muTheory = calculateTheoreticalMu(R1, R2, isFree1, isFree2);
+  const PcrTheory = Math.PI * Math.PI * E * I / ((muTheory * L) * (muTheory * L));
 
   if (N >= 0 || lambdaCrit <= 0) {
-    const EulerNcr = Math.PI * Math.PI * E * I / (L * L);
-    return { mu: 1.0, Pcr: EulerNcr };
+    return { mu: muTheory, Pcr: PcrTheory, muTheory };
   }
 
-  const Pcr = Math.abs(N) * lambdaCrit;
-  const EulerNcr = Math.PI * Math.PI * E * I / (L * L);
-
-  let mu = 1.0;
-  if (Pcr > 0 && EulerNcr > 0) {
-    mu = Math.sqrt(EulerNcr / Pcr);
+  const PcrActual = Math.abs(N) * lambdaCrit;
+  const EulerPinned = Math.PI * Math.PI * E * I / (L * L);
+  let muActual = 1.0;
+  if (PcrActual > 0 && EulerPinned > 0) {
+    muActual = Math.sqrt(EulerPinned / PcrActual);
   }
-  mu = Math.max(0.1, Math.min(5.0, mu));
+  muActual = Math.max(0.1, Math.min(5.0, muActual));
 
-  return { mu, Pcr };
+  return { mu: muActual, Pcr: PcrActual, muTheory };
 }
 
 export function solveBuckling(nodes, members, memberAxialForces, analysisMode, numModes = 3) {
@@ -389,10 +448,11 @@ export function solveBuckling(nodes, members, memberAxialForces, analysisMode, n
       const n1 = nodes.find(n => n.id === member.node1Id);
       const n2 = nodes.find(n => n.id === member.node2Id);
       if (n1 && n2) {
-        const eff = calculateEffectiveLength(member, n1, n2, analysisMode, lambda1, axialForceMap);
+        const eff = calculateEffectiveLength(member, n1, n2, analysisMode, lambda1, axialForceMap, members, nodes);
         memberEffectiveLengths.set(member.id, {
           mu: eff.mu,
-          Pcr: eff.Pcr
+          Pcr: eff.Pcr,
+          muTheory: eff.muTheory
         });
       }
     }

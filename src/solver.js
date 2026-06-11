@@ -334,7 +334,7 @@ export function solveFrame(nodes, members) {
       M2 = 0;
     }
 
-    const axialForce = (N1 + N2) / 2;
+    const axialForce = N2;
 
     member.axialForce = axialForce;
     member.stress = axialForce / member.A;

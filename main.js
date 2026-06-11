@@ -247,6 +247,7 @@ function renameLoadCase(id, newName) {
 
 function switchLoadCase(id) {
   saveCurrentLoadCaseFromNodes();
+  if (bucklingActive) exitBucklingMode();
   currentLoadCaseId = id;
   applyLoadCaseToNodes(getCurrentLoadCase());
   const lc = getCurrentLoadCase();
@@ -319,6 +320,7 @@ function restoreResults(results) {
 function solveCurrentLoadCase() {
   try {
     saveCurrentLoadCaseFromNodes();
+    if (bucklingActive) exitBucklingMode();
     let result;
     if (analysisMode === 'frame') {
       result = solveFrame(nodes, members);
@@ -373,6 +375,7 @@ function solveAllLoadCases() {
   let successCount = 0;
   let failCount = 0;
 
+  if (bucklingActive) exitBucklingMode();
   const originalLoadCaseId = currentLoadCaseId;
 
   for (const lc of loadCases) {
@@ -566,6 +569,7 @@ function updateForceDiagramButtons() {
 
 function startModalAnalysis() {
   if (influenceActive) exitInfluenceMode();
+  if (bucklingActive) exitBucklingMode();
   const numModes = parseInt(document.getElementById('modal-num-modes').value) || 5;
 
   try {
@@ -741,15 +745,14 @@ function getMemberAxialForces() {
   const axialForces = new Map();
   if (analysisMode === 'frame' && frameResults) {
     frameResults.members.forEach(mr => {
-      const avgN = (Math.abs(mr.N1) + Math.abs(mr.N2)) / 2;
-      const sign = (mr.N1 + mr.N2) < 0 ? -1 : 1;
-      axialForces.set(mr.id, sign * avgN);
-    });
-  } else if (hasResults) {
-    members.forEach(m => {
-      axialForces.set(m.id, m.axialForce || 0);
+      axialForces.set(mr.id, mr.axialForce);
     });
   }
+  members.forEach(m => {
+    if (!axialForces.has(m.id)) {
+      axialForces.set(m.id, m.axialForce || 0);
+    }
+  });
   return axialForces;
 }
 
@@ -814,7 +817,8 @@ function updateBucklingEffectiveLengths() {
 
     const valSpan = document.createElement('span');
     valSpan.className = 'mu-value';
-    valSpan.textContent = `μ=${info.mu.toFixed(2)}, Pcr=${(info.Pcr / 1000).toFixed(1)} kN`;
+    const muTh = info.muTheory !== undefined ? info.muTheory.toFixed(2) : '-';
+    valSpan.textContent = `μ(理论)=${muTh}, μ=${info.mu.toFixed(2)}, Pcr=${(info.Pcr / 1000).toFixed(1)} kN`;
 
     item.appendChild(idSpan);
     item.appendChild(valSpan);
@@ -3547,7 +3551,7 @@ function updateTooltip(e) {
       if (bl) {
         html += `<br/><hr style="border:none;border-top:1px solid #e0e0e0;margin:4px 0;"/>`;
         html += `<span style="color:#bf360c;"><strong>屈曲分析:</strong></span><br/>`;
-        html += `有效长度系数 μ = ${bl.mu.toFixed(3)}<br/>`;
+        html += `μ(理论) = ${(bl.muTheory || bl.mu).toFixed(3)}&nbsp;&nbsp;μ(整体) = ${bl.mu.toFixed(3)}<br/>`;
         html += `临界力 Pcr = ${(bl.Pcr / 1000).toFixed(2)} kN`;
       }
     }
@@ -3951,6 +3955,8 @@ function startPushoverAnalysis() {
     alert('推覆分析仅在刚架模式下可用');
     return;
   }
+
+  if (bucklingActive) exitBucklingMode();
 
   const pattern = document.getElementById('po-pattern').value;
   const direction = document.getElementById('po-direction').value;
