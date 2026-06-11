@@ -2174,6 +2174,10 @@ body {
   flex-direction: column;
 }
 
+.pushover-panel.hidden {
+  display: none;
+}
+
 .pushover-panel-header {
   display: flex;
   align-items: center;
@@ -2228,6 +2232,14 @@ body {
   box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   z-index: 90;
   border: 1px solid #ddd;
+}
+
+.pushover-timeline-container.hidden {
+  display: none;
+}
+
+.pushover-tooltip.hidden {
+  display: none;
 }
 
 .pushover-timeline-label {

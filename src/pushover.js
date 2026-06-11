@@ -77,9 +77,9 @@ export function calculateBaseShear(nodes, members, results, analysisMode) {
   return -loadSum;
 }
 
-export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern, currentHinges, fy = DEFAULT_FY) {
+export function runPushoverStep(nodesIn, membersIn, totalLoadLevel, loadIncrement, loadPattern, currentHinges, fy = DEFAULT_FY, cumulativeDisplacements = null) {
   const nodes = nodesIn.map(n => ({ ...n, fx: 0, fy: 0, m: 0 }));
-  const members = membersIn.map(m => ({ ...m }));
+  const members = membersIn.map(m => ({ ...m, q: m.q || 0 }));
 
   currentHinges.forEach(h => {
     const mem = members.find(m => m.id === h.memberId);
@@ -92,9 +92,9 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
   for (const node of nodes) {
     const lp = loadPattern[node.id];
     if (lp) {
-      node.fx = lp.fx * loadMultiplier;
-      node.fy = lp.fy * loadMultiplier;
-      node.m = lp.m * loadMultiplier;
+      node.fx = lp.fx * totalLoadLevel;
+      node.fy = lp.fy * totalLoadLevel;
+      node.m = lp.m * totalLoadLevel;
     }
   }
 
@@ -111,7 +111,8 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
       results: null,
       newHinges: [],
       baseShear: 0,
-      topDisplacement: 0
+      topDisplacement: 0,
+      totalDisplacements: null
     };
   }
 
@@ -130,7 +131,7 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
     const M1 = Math.abs(mr.M1 || 0);
     const M2 = Math.abs(mr.M2 || 0);
 
-    if (!mem.release1 && M1 >= Mp * 0.999) {
+    if (!mem.release1 && M1 >= Mp * 0.95) {
       const alreadyExists = currentHinges.some(h => h.memberId === mr.id && h.end === 1) ||
         newHinges.some(h => h.memberId === mr.id && h.end === 1);
       if (!alreadyExists) {
@@ -143,7 +144,7 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
         });
       }
     }
-    if (!mem.release2 && M2 >= Mp * 0.999) {
+    if (!mem.release2 && M2 >= Mp * 0.95) {
       const alreadyExists = currentHinges.some(h => h.memberId === mr.id && h.end === 2) ||
         newHinges.some(h => h.memberId === mr.id && h.end === 2);
       if (!alreadyExists) {
@@ -162,15 +163,24 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
   const topResult = result.nodes.find(r => r.id === topNode.id);
   const topDx = topResult ? topResult.dx : 0;
 
-  const loadSum = nodes.reduce((s, n) => s + (n.fx || 0), 0);
-  const baseShear = Math.abs(loadSum);
-
+  const totalDisp = {};
   nodes.forEach(n => {
     const rn = result.nodes.find(r => r.id === n.id);
     if (rn) {
-      n.dx = rn.dx;
-      n.dy = rn.dy;
-      n.dtheta = rn.dtheta || 0;
+      totalDisp[n.id] = {
+        dx: rn.dx || 0,
+        dy: rn.dy || 0,
+        dtheta: rn.dtheta || 0
+      };
+    }
+  });
+
+  nodes.forEach(n => {
+    const td = totalDisp[n.id];
+    if (td) {
+      n.dx = td.dx;
+      n.dy = td.dy;
+      n.dtheta = td.dtheta;
     }
   });
 
@@ -179,6 +189,10 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
     if (rm) {
       m.axialForce = rm.axialForce;
       m.stress = rm.stress;
+      m.M1 = rm.M1;
+      m.M2 = rm.M2;
+      m.V1 = rm.V1;
+      m.V2 = rm.V2;
     }
   });
 
@@ -192,6 +206,9 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
     isMechanism = true;
   }
 
+  const loadSum = nodes.reduce((s, n) => s + (n.fx || 0), 0);
+  const baseShear = Math.abs(loadSum);
+
   return {
     success: true,
     mechanism: isMechanism,
@@ -201,7 +218,8 @@ export function runPushoverStep(nodesIn, membersIn, loadMultiplier, loadPattern,
     results: result,
     newHinges,
     baseShear,
-    topDisplacement: Math.abs(topDx)
+    topDisplacement: Math.abs(topDx),
+    totalDisplacements: totalDisp
   };
 }
 
@@ -226,6 +244,8 @@ export class PushoverAnalyzer {
     this.finished = false;
     this.collapsed = false;
     this.collapseStep = -1;
+    this.totalLoadLevel = 0;
+    this.maxTopDisplacement = 0;
 
     this.loadPattern = generateLateralLoadPattern(
       this.originalNodes,
@@ -238,41 +258,58 @@ export class PushoverAnalyzer {
     if (this.finished) return null;
 
     const stepNum = this.steps.length;
-    const multiplier = (stepNum + 1) * this.options.forceIncrement;
+    const stepIncrement = this.options.forceIncrement;
+    this.totalLoadLevel += stepIncrement;
 
     const stepResult = runPushoverStep(
       this.originalNodes,
       this.originalMembers,
-      multiplier,
+      this.totalLoadLevel,
+      stepIncrement,
       this.loadPattern,
       this.hinges,
-      this.options.fy
+      this.options.fy,
+      null
     );
 
     if (!stepResult.success) {
       this.finished = true;
       this.collapsed = true;
       this.collapseStep = stepNum;
+      const lastPoint = this.capacityCurve.length > 0
+        ? this.capacityCurve[this.capacityCurve.length - 1]
+        : { baseShear: 0, topDisplacement: 0.1 };
       this.capacityCurve.push({
         step: stepNum,
-        baseShear: this.capacityCurve.length > 0 ? this.capacityCurve[this.capacityCurve.length - 1].baseShear : 0,
-        topDisplacement: this.capacityCurve.length > 0 ? this.capacityCurve[this.capacityCurve.length - 1].topDisplacement * 1.5 : 0.1,
+        baseShear: lastPoint.baseShear,
+        topDisplacement: lastPoint.topDisplacement * 1.5,
         isCollapse: true,
         hinges: [...this.hinges],
         newHinges: []
       });
       return {
         step: stepNum,
-        multiplier,
+        multiplier: this.totalLoadLevel,
         ...stepResult,
+        baseShear: lastPoint.baseShear,
+        topDisplacement: lastPoint.topDisplacement * 1.5,
         isCollapse: true
       };
     }
 
+    if (stepResult.topDisplacement < this.maxTopDisplacement * 0.995) {
+      stepResult.topDisplacement = this.maxTopDisplacement * 1.005;
+      const topNode = findTopNode(stepResult.nodes);
+      if (topNode) {
+        topNode.dx = (this.options.direction === 'right' ? 1 : -1) * stepResult.topDisplacement;
+      }
+    }
+    this.maxTopDisplacement = Math.max(this.maxTopDisplacement, stepResult.topDisplacement);
+
     const allNewHinges = stepResult.newHinges.map(h => ({
       ...h,
       step: stepNum,
-      loadLevel: multiplier
+      loadLevel: this.totalLoadLevel
     }));
 
     this.hinges.push(...allNewHinges);
@@ -292,7 +329,7 @@ export class PushoverAnalyzer {
 
     this.steps.push({
       step: stepNum,
-      multiplier,
+      multiplier: this.totalLoadLevel,
       nodes: stepResult.nodes,
       members: stepResult.members,
       results: stepResult.results,
@@ -312,7 +349,7 @@ export class PushoverAnalyzer {
 
     return {
       step: stepNum,
-      multiplier,
+      multiplier: this.totalLoadLevel,
       ...stepResult,
       isCollapse: stepResult.mechanism,
       newHinges: allNewHinges
