@@ -254,3 +254,69 @@ export function applyEndReleases(kLocal, release1, release2) {
 
   return kModified;
 }
+
+export function createBeamGeometricStiffnessMatrix(N, L) {
+  const NL = N / L;
+  return [
+    [ 0,    0,          0,           0,    0,          0          ],
+    [ 0,    6 * NL / 5, NL * L / 10, 0,   -6 * NL / 5, NL * L / 10 ],
+    [ 0,    NL * L / 10, 2 * NL * L * L / 15, 0, -NL * L / 10, -NL * L * L / 30 ],
+    [ 0,    0,          0,           0,    0,          0          ],
+    [ 0,   -6 * NL / 5, -NL * L / 10, 0,    6 * NL / 5, -NL * L / 10 ],
+    [ 0,    NL * L / 10, -NL * L * L / 30, 0, -NL * L / 10, 2 * NL * L * L / 15 ]
+  ];
+}
+
+export function createTrussGeometricStiffnessMatrix(N, L) {
+  const NL = N / L;
+  return [
+    [ 0,  0,  0,  0 ],
+    [ 0, NL, 0, -NL ],
+    [ 0,  0,  0,  0 ],
+    [ 0, -NL, 0, NL ]
+  ];
+}
+
+export function invertMatrix(A) {
+  const n = A.length;
+  const aug = [];
+  for (let i = 0; i < n; i++) {
+    aug[i] = [...A[i], ...Array(n).fill(0)];
+    aug[i][n + i] = 1;
+  }
+
+  for (let pivot = 0; pivot < n; pivot++) {
+    let maxRow = pivot;
+    let maxVal = Math.abs(aug[pivot][pivot]);
+    for (let row = pivot + 1; row < n; row++) {
+      if (Math.abs(aug[row][pivot]) > maxVal) {
+        maxVal = Math.abs(aug[row][pivot]);
+        maxRow = row;
+      }
+    }
+    if (maxRow !== pivot) {
+      [aug[pivot], aug[maxRow]] = [aug[maxRow], aug[pivot]];
+    }
+    const pivotVal = aug[pivot][pivot];
+    if (Math.abs(pivotVal) < 1e-14) {
+      throw new Error('矩阵奇异，无法求逆');
+    }
+    for (let col = pivot; col < 2 * n; col++) {
+      aug[pivot][col] /= pivotVal;
+    }
+    for (let row = 0; row < n; row++) {
+      if (row !== pivot) {
+        const factor = aug[row][pivot];
+        for (let col = pivot; col < 2 * n; col++) {
+          aug[row][col] -= factor * aug[pivot][col];
+        }
+      }
+    }
+  }
+
+  const inv = [];
+  for (let i = 0; i < n; i++) {
+    inv[i] = aug[i].slice(n);
+  }
+  return inv;
+}

@@ -3,6 +3,7 @@ import { Renderer } from './src/renderer.js';
 import { createNode, createMember, deepClone } from './src/core.js';
 import { solveTruss, solveFrame } from './src/solver.js';
 import { solveModal } from './src/modal.js';
+import { solveBuckling } from './src/buckling.js';
 import { HistoryManager } from './src/history.js';
 import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases, createConstructionStagePreset } from './src/presets.js';
 import { TopoOptimizer } from './src/topo.js';
@@ -35,6 +36,13 @@ let currentModalMode = 0;
 let modalAnimFrame = null;
 let modalAnimTime = 0;
 let modalScaleFactor = 50;
+
+let bucklingActive = false;
+let bucklingResults = null;
+let currentBucklingMode = 0;
+let bucklingAnimFrame = null;
+let bucklingAnimTime = 0;
+let bucklingScaleFactor = 50;
 
 let influenceActive = false;
 let influenceStep = 'idle';
@@ -504,6 +512,7 @@ function updateViewModeButtons() {
 function setAnalysisMode(mode) {
   if (analysisMode === mode) return;
   if (modalActive) exitModalMode();
+  if (bucklingActive) exitBucklingMode();
   if (influenceActive) exitInfluenceMode();
   if (sectionStressActive) hideSectionStressView();
   if (pushoverActive) exitPushoverMode();
@@ -669,6 +678,189 @@ function startModalAnimation() {
   }
 
   modalAnimFrame = requestAnimationFrame(animate);
+}
+
+function startBucklingAnalysis() {
+  if (!hasResults && !getCurrentLoadCaseSolved()) {
+    alert('请先进行静力分析！屈曲分析需要轴力结果来组装几何刚度矩阵。');
+    return;
+  }
+
+  if (influenceActive) exitInfluenceMode();
+  if (modalActive) exitModalMode();
+
+  const numModes = parseInt(document.getElementById('buckling-num-modes').value) || 3;
+
+  try {
+    const axialForces = getMemberAxialForces();
+    bucklingResults = solveBuckling(nodes, members, axialForces, analysisMode, numModes);
+    bucklingActive = true;
+    currentBucklingMode = 0;
+    renderer.bucklingMode = true;
+
+    document.getElementById('buckling-section').style.display = 'block';
+    document.getElementById('buckling-scale-label').style.display = 'flex';
+    document.getElementById('results-section').style.display = 'none';
+    document.getElementById('btn-buckling').classList.add('active');
+
+    updateBucklingLambdaList();
+    startBucklingAnimation();
+    updateStatus(`屈曲分析完成: 求得 ${bucklingResults.modes.length} 阶屈曲模态`);
+  } catch (e) {
+    alert('屈曲分析失败: ' + e.message);
+    updateStatus('屈曲分析失败: ' + e.message);
+  }
+}
+
+function exitBucklingMode() {
+  bucklingActive = false;
+  renderer.bucklingMode = false;
+  renderer.bucklingModeShape = null;
+  renderer.bucklingAmplitude = 0;
+  renderer.bucklingEnvelope = null;
+
+  if (bucklingAnimFrame) {
+    cancelAnimationFrame(bucklingAnimFrame);
+    bucklingAnimFrame = null;
+  }
+
+  document.getElementById('buckling-section').style.display = 'none';
+  document.getElementById('buckling-scale-label').style.display = 'none';
+  document.getElementById('results-section').style.display = 'block';
+  document.getElementById('btn-buckling').classList.remove('active');
+
+  render();
+}
+
+function getCurrentLoadCaseSolved() {
+  const lc = getCurrentLoadCase();
+  return lc && lc.solved;
+}
+
+function getMemberAxialForces() {
+  const axialForces = new Map();
+  if (analysisMode === 'frame' && frameResults) {
+    frameResults.members.forEach(mr => {
+      const avgN = (Math.abs(mr.N1) + Math.abs(mr.N2)) / 2;
+      const sign = (mr.N1 + mr.N2) < 0 ? -1 : 1;
+      axialForces.set(mr.id, sign * avgN);
+    });
+  } else if (hasResults) {
+    members.forEach(m => {
+      axialForces.set(m.id, m.axialForce || 0);
+    });
+  }
+  return axialForces;
+}
+
+function updateBucklingLambdaList() {
+  if (!bucklingResults || !bucklingResults.modes.length) return;
+
+  const container = document.getElementById('buckling-lambda-list');
+  container.innerHTML = '';
+
+  const hasCritical = bucklingResults.modes.some(m => m.lambda < 1);
+  const warningDiv = document.getElementById('buckling-warning');
+  warningDiv.style.display = hasCritical ? 'block' : 'none';
+
+  bucklingResults.modes.forEach((mode, idx) => {
+    const item = document.createElement('div');
+    item.className = 'buckling-lambda-item';
+    if (idx === currentBucklingMode) item.classList.add('active');
+    if (mode.lambda < 1) item.classList.add('critical');
+
+    const numSpan = document.createElement('span');
+    numSpan.className = 'mode-number';
+    numSpan.textContent = `第${mode.modeNumber}阶`;
+
+    const lambdaSpan = document.createElement('span');
+    lambdaSpan.className = 'lambda-value';
+    if (mode.lambda < 1) lambdaSpan.classList.add('critical-val');
+    lambdaSpan.textContent = `λ = ${mode.lambda.toFixed(4)}`;
+
+    item.appendChild(numSpan);
+    item.appendChild(lambdaSpan);
+
+    item.onclick = () => {
+      currentBucklingMode = idx;
+      updateBucklingLambdaList();
+    };
+
+    container.appendChild(item);
+  });
+
+  updateBucklingEffectiveLengths();
+}
+
+function updateBucklingEffectiveLengths() {
+  const container = document.getElementById('buckling-effective-lengths');
+  const listContainer = document.getElementById('buckling-effective-list');
+
+  if (!bucklingResults || !bucklingResults.memberEffectiveLengths || bucklingResults.memberEffectiveLengths.size === 0) {
+    container.style.display = 'none';
+    return;
+  }
+
+  container.style.display = 'block';
+  listContainer.innerHTML = '';
+
+  bucklingResults.memberEffectiveLengths.forEach((info, memberId) => {
+    const item = document.createElement('div');
+    item.className = 'buckling-effective-item';
+
+    const idSpan = document.createElement('span');
+    idSpan.className = 'member-id';
+    idSpan.textContent = `杆件#${memberId}`;
+
+    const valSpan = document.createElement('span');
+    valSpan.className = 'mu-value';
+    valSpan.textContent = `μ=${info.mu.toFixed(2)}, Pcr=${(info.Pcr / 1000).toFixed(1)} kN`;
+
+    item.appendChild(idSpan);
+    item.appendChild(valSpan);
+    listContainer.appendChild(item);
+  });
+}
+
+function startBucklingAnimation() {
+  if (bucklingAnimFrame) {
+    cancelAnimationFrame(bucklingAnimFrame);
+  }
+
+  let lastTime = 0;
+  bucklingAnimTime = 0;
+
+  function animate(timestamp) {
+    if (!bucklingActive || !bucklingResults || !bucklingResults.modes.length) {
+      bucklingAnimFrame = null;
+      return;
+    }
+
+    if (lastTime === 0) lastTime = timestamp;
+    const delta = (timestamp - lastTime) / 1000;
+    lastTime = timestamp;
+
+    bucklingAnimTime += delta;
+
+    const mode = bucklingResults.modes[currentBucklingMode];
+    if (!mode) {
+      bucklingAnimFrame = requestAnimationFrame(animate);
+      return;
+    }
+
+    const visualFreq = 1.2;
+    const amplitude = Math.sin(2 * Math.PI * visualFreq * bucklingAnimTime);
+
+    renderer.bucklingModeShape = mode.nodeModeShapes;
+    renderer.bucklingAmplitude = amplitude;
+    renderer.bucklingEnvelope = bucklingScaleFactor;
+
+    render();
+
+    bucklingAnimFrame = requestAnimationFrame(animate);
+  }
+
+  bucklingAnimFrame = requestAnimationFrame(animate);
 }
 
 function updateLoadCaseList() {
@@ -1258,6 +1450,7 @@ function applyStageVisualization() {
 
 function enterConstructionMode() {
   if (modalActive) exitModalMode();
+  if (bucklingActive) exitBucklingMode();
   if (influenceActive) exitInfluenceMode();
   constructionActive = true;
   document.getElementById('btn-construction').classList.add('active');
@@ -1566,6 +1759,7 @@ function updateTimeline() {
 
 function enterTopoMode() {
   if (modalActive) exitModalMode();
+  if (bucklingActive) exitBucklingMode();
   if (influenceActive) exitInfluenceMode();
   if (constructionActive) exitConstructionMode();
   if (sectionStressActive) hideSectionStressView();
@@ -2047,6 +2241,7 @@ function computeSchemeMetrics(scheme) {
 
 function enterCompareMode() {
   if (modalActive) exitModalMode();
+  if (bucklingActive) exitBucklingMode();
   if (influenceActive) exitInfluenceMode();
   if (constructionActive) exitConstructionMode();
   if (topoActive) exitTopoMode();
@@ -3347,6 +3542,16 @@ function updateTooltip(e) {
       html += `<span style="color:#999;">未求解</span>`;
     }
 
+    if (bucklingResults && bucklingResults.memberEffectiveLengths) {
+      const bl = bucklingResults.memberEffectiveLengths.get(member.id);
+      if (bl) {
+        html += `<br/><hr style="border:none;border-top:1px solid #e0e0e0;margin:4px 0;"/>`;
+        html += `<span style="color:#bf360c;"><strong>屈曲分析:</strong></span><br/>`;
+        html += `有效长度系数 μ = ${bl.mu.toFixed(3)}<br/>`;
+        html += `临界力 Pcr = ${(bl.Pcr / 1000).toFixed(2)} kN`;
+      }
+    }
+
     tooltip.innerHTML = html;
     tooltip.style.left = (pos.x + 15) + 'px';
     tooltip.style.top = (pos.y + 15) + 'px';
@@ -3447,6 +3652,15 @@ function updateButtonStates() {
   document.getElementById('btn-undo').disabled = !historyManager.canUndo();
   document.getElementById('btn-redo').disabled = !historyManager.canRedo();
   document.getElementById('btn-report').disabled = !hasResults && loadCases.filter(lc => lc.solved).length === 0;
+
+  const hasStaticResults = hasResults || loadCases.some(lc => lc.solved);
+  const btnBuckling = document.getElementById('btn-buckling');
+  if (btnBuckling) {
+    btnBuckling.disabled = !hasStaticResults;
+    btnBuckling.title = hasStaticResults ? '屈曲分析' : '请先进行静力分析';
+    btnBuckling.style.opacity = hasStaticResults ? '1' : '0.5';
+    btnBuckling.style.cursor = hasStaticResults ? 'pointer' : 'not-allowed';
+  }
 }
 
 function exportJSON() {
@@ -3524,6 +3738,7 @@ function enterPushoverMode() {
     return;
   }
   if (modalActive) exitModalMode();
+  if (bucklingActive) exitBucklingMode();
   if (influenceActive) exitInfluenceMode();
   if (constructionActive) exitConstructionMode();
   if (topoActive) exitTopoMode();
@@ -4360,6 +4575,26 @@ document.getElementById('btn-modal').addEventListener('click', () => {
 
 document.getElementById('btn-modal-close').addEventListener('click', exitModalMode);
 
+document.getElementById('btn-buckling').addEventListener('click', () => {
+  if (bucklingActive) {
+    exitBucklingMode();
+  } else {
+    startBucklingAnalysis();
+  }
+});
+
+document.getElementById('btn-buckling-close').addEventListener('click', exitBucklingMode);
+
+document.getElementById('buckling-scale-factor').addEventListener('change', (e) => {
+  bucklingScaleFactor = parseFloat(e.target.value) || 50;
+});
+
+document.getElementById('buckling-num-modes').addEventListener('change', () => {
+  if (bucklingActive) {
+    startBucklingAnalysis();
+  }
+});
+
 document.getElementById('btn-influence').addEventListener('click', () => {
   if (influenceActive) {
     exitInfluenceMode();
@@ -4468,6 +4703,7 @@ document.getElementById('btn-add-loadcase').addEventListener('click', () => {
 document.getElementById('btn-clear').addEventListener('click', () => {
   if (confirm('确定要清空所有内容吗？')) {
     if (modalActive) exitModalMode();
+    if (bucklingActive) exitBucklingMode();
     if (influenceActive) exitInfluenceMode();
     if (constructionActive) exitConstructionMode();
     if (topoActive) exitTopoMode();
@@ -4640,6 +4876,7 @@ function updateStatus(text) {
 
 function enterInfluenceMode() {
   if (modalActive) exitModalMode();
+  if (bucklingActive) exitBucklingMode();
   if (!loadCases.some(lc => lc.solved)) {
     alert('请先至少求解一个工况后再进入影响线模式');
     return;
@@ -6489,6 +6726,7 @@ function resizeTimeHistoryCanvas() {
 
 function enterTimeHistoryMode() {
   if (modalActive) exitModalMode();
+  if (bucklingActive) exitBucklingMode();
   if (influenceActive) exitInfluenceMode();
   if (constructionActive) exitConstructionMode();
   if (sectionStressActive) hideSectionStressView();

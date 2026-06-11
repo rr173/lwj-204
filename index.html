@@ -23,6 +23,7 @@
         <button id="btn-compare" class="btn btn-compare">方案对比</button>
         <button id="btn-time-history" class="btn btn-time-history">动力时程</button>
         <button id="btn-pushover" class="btn btn-pushover">推覆分析</button>
+        <button id="btn-buckling" class="btn btn-buckling">屈曲分析</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -46,6 +47,10 @@
         <label id="modal-scale-label" style="display:none;">
           振型放大系数:
           <input type="number" id="modal-scale-factor" value="50" min="1" max="500" step="10" />
+        </label>
+        <label id="buckling-scale-label" style="display:none;">
+          屈曲模态放大系数:
+          <input type="number" id="buckling-scale-factor" value="50" min="1" max="500" step="10" />
         </label>
       </div>
     </div>
@@ -542,6 +547,25 @@
         </div>
         <div id="modal-freq-list" class="modal-freq-list"></div>
         <button id="btn-modal-close" class="btn btn-small" style="margin-top:8px;">返回静力分析</button>
+      </div>
+      <div class="panel-section" id="buckling-section" style="display:none;">
+        <h3>屈曲分析结果</h3>
+        <div class="buckling-controls">
+          <label>
+            求解阶数:
+            <input type="number" id="buckling-num-modes" value="3" min="1" max="10" step="1" />
+          </label>
+        </div>
+        <div id="buckling-warning" class="buckling-warning" style="display:none;">
+          ⚠ <strong>临界荷载系数 λ &lt; 1</strong><br/>
+          当前荷载已超过失稳临界值，结构不安全!
+        </div>
+        <div id="buckling-lambda-list" class="buckling-lambda-list"></div>
+        <div id="buckling-effective-lengths" class="buckling-effective-lengths" style="display:none;">
+          <h4>杆件有效长度系数</h4>
+          <div id="buckling-effective-list" style="font-size:11px;max-height:150px;overflow-y:auto;"></div>
+        </div>
+        <button id="btn-buckling-close" class="btn btn-small" style="margin-top:8px;">返回静力分析</button>
       </div>
     </div>
   </div>
