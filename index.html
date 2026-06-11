@@ -22,6 +22,7 @@
         <button id="btn-topo" class="btn btn-topo">拓扑优化</button>
         <button id="btn-compare" class="btn btn-compare">方案对比</button>
         <button id="btn-time-history" class="btn btn-time-history">动力时程</button>
+        <button id="btn-pushover" class="btn btn-pushover">推覆分析</button>
         <button id="btn-clear" class="btn">清空</button>
         <button id="btn-undo" class="btn" title="Ctrl+Z">撤销</button>
         <button id="btn-redo" class="btn" title="Ctrl+Y">重做</button>
@@ -115,6 +116,23 @@
       <canvas id="time-history-canvas"></canvas>
       <div id="th-tooltip" class="th-tooltip hidden"></div>
     </div>
+
+    <div id="pushover-panel" class="pushover-panel hidden">
+      <div class="pushover-panel-header">
+        <span class="pushover-panel-title">能力曲线 (基底剪力 - 顶点位移)</span>
+        <div class="pushover-panel-controls">
+          <button id="btn-pushover-panel-close" class="btn btn-small">隐藏</button>
+        </div>
+      </div>
+      <canvas id="pushover-canvas"></canvas>
+      <div id="pushover-tooltip" class="pushover-tooltip hidden"></div>
+    </div>
+
+    <div id="pushover-timeline-container" class="pushover-timeline-container hidden">
+      <span class="pushover-timeline-label">推覆步骤:</span>
+      <input type="range" id="pushover-timeline-slider" class="pushover-timeline-slider" min="0" max="0" value="0" step="1" />
+      <span id="pushover-step-info" class="pushover-step-info"></span>
+    </div>
     
     <div class="info-panel">
       <div class="panel-tabs">
@@ -122,6 +140,7 @@
         <div class="panel-tab" data-tab="construction">施工阶段</div>
         <div class="panel-tab" data-tab="section">截面库</div>
         <div class="panel-tab" data-tab="timehistory">动力时程</div>
+        <div class="panel-tab" data-tab="pushover">推覆分析</div>
       </div>
 
       <div id="tab-general" class="tab-content active">
@@ -282,6 +301,69 @@
       <div class="panel-section" id="th-results-section" style="display:none;">
         <h3>时程结果</h3>
         <div class="th-result-summary" id="th-result-summary"></div>
+      </div>
+      </div>
+
+      <div id="tab-pushover" class="tab-content">
+      <div class="panel-section">
+        <h3>推覆分析设置</h3>
+        <div class="po-param-row">
+          <label>侧向力分布:</label>
+          <select id="po-pattern">
+            <option value="triangle">倒三角形 (按高度)</option>
+            <option value="uniform">均匀分布</option>
+          </select>
+        </div>
+        <div class="po-param-row">
+          <label>加载方向:</label>
+          <select id="po-direction">
+            <option value="right">→ 向右</option>
+            <option value="left">← 向左</option>
+          </select>
+        </div>
+        <div class="po-param-row">
+          <label>每步力增量 (N):</label>
+          <input type="number" id="po-force-inc" value="5000" min="100" max="1000000" step="1000" />
+        </div>
+        <div class="po-param-row">
+          <label>最大步数:</label>
+          <input type="number" id="po-max-steps" value="100" min="5" max="500" step="5" />
+        </div>
+        <div class="po-param-row">
+          <label>屈服强度 fy (MPa):</label>
+          <input type="number" id="po-fy" value="235" min="100" max="1000" step="5" />
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>推覆控制</h3>
+        <div class="po-demo-section" id="po-demo-section" style="display:none;">
+          <button id="btn-po-demo" class="btn btn-small btn-primary" style="width:100%;background:#ff9800;">🎬 演示推覆 (门式刚架)</button>
+          <div style="height:6px;"></div>
+        </div>
+        <button id="btn-po-start" class="btn btn-small btn-primary" style="width:100%;">▶ 开始推覆</button>
+        <button id="btn-po-stop" class="btn btn-small" style="width:100%;display:none;margin-top:4px;">⏹ 停止计算</button>
+        <button id="btn-po-reset" class="btn btn-small" style="width:100%;display:none;margin-top:4px;">↺ 重置</button>
+        <div class="po-progress-section" id="po-progress-section" style="display:none;margin-top:8px;">
+          <div class="po-progress-bar">
+            <div class="po-progress-fill" id="po-progress-fill"></div>
+          </div>
+          <div class="po-progress-text" id="po-progress-text">步骤 0 / 0</div>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>实时状态</h3>
+        <div class="po-status-box" id="po-status-box">
+          <div class="po-status-item">当前步数: <span id="po-cur-step">0</span></div>
+          <div class="po-status-item">基底剪力: <span id="po-cur-shear">0</span> kN</div>
+          <div class="po-status-item">顶点位移: <span id="po-cur-disp">0</span> mm</div>
+          <div class="po-status-item">塑性铰数: <span id="po-cur-hinges">0</span></div>
+        </div>
+      </div>
+      <div class="panel-section" id="po-results-section" style="display:none;">
+        <h3>推覆结果摘要</h3>
+        <div id="po-result-summary"></div>
+        <h4 style="margin-top:10px;font-size:12px;color:#555;">塑性铰形成顺序</h4>
+        <div id="po-hinge-list"></div>
       </div>
       </div>
 

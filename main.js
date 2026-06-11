@@ -7,6 +7,7 @@ import { HistoryManager } from './src/history.js';
 import { createWarrenTruss, createDefaultLoadCases, createPortalFrame, createFrameLoadCases, createConstructionStagePreset } from './src/presets.js';
 import { TopoOptimizer } from './src/topo.js';
 import { SECTIONS, searchSections, sortSections, selectOptimalSection, getSectionByName, YIELD_STRENGTH, SAFETY_FACTOR, calculateMaxMoment } from './src/sections.js';
+import { PushoverAnalyzer, calculatePlasticMoment } from './src/pushover.js';
 
 const canvas = document.getElementById('canvas');
 const renderer = new Renderer(canvas);
@@ -105,6 +106,18 @@ let sectionSortBy = 'name';
 let sectionSortAscending = true;
 let sectionSearchQuery = '';
 let autoSelectResults = null;
+
+let pushoverActive = false;
+let pushoverAnalyzer = null;
+let pushoverRunning = false;
+let pushoverCurrentStep = -1;
+let pushoverTimer = null;
+let pushoverSavedNodes = null;
+let pushoverSavedMembers = null;
+let pushoverSavedFrameResults = null;
+let pushoverSavedHasResults = false;
+let pushoverPanelVisible = false;
+let _pushoverResizeTimer = null;
 
 function getCurrentLoadCase() {
   return loadCases.find(lc => lc.id === currentLoadCaseId);
@@ -490,6 +503,7 @@ function setAnalysisMode(mode) {
   if (modalActive) exitModalMode();
   if (influenceActive) exitInfluenceMode();
   if (sectionStressActive) hideSectionStressView();
+  if (pushoverActive) exitPushoverMode();
   analysisMode = mode;
   renderer.analysisMode = mode;
 
@@ -514,6 +528,7 @@ function setAnalysisMode(mode) {
 
   updateAnalysisModeButtons();
   updateLoadCaseList();
+  updatePushoverButtonStates();
   render();
   updateResultsDisplay();
   saveToStorage();
@@ -2702,6 +2717,7 @@ function init() {
   updateForceDiagramButtons();
   updateSchemeList();
   updateAutoSelectButtonState();
+  updatePushoverButtonStates();
 }
 
 function render() {
@@ -3477,9 +3493,413 @@ function exportJSON() {
   URL.revokeObjectURL(url);
 }
 
+function isPortalFramePreset() {
+  if (members.length !== 3 || nodes.length !== 4) return false;
+  const fixedNodes = nodes.filter(n => n.support === 'fixed');
+  return fixedNodes.length === 2;
+}
+
+function updatePushoverButtonStates() {
+  const btn = document.getElementById('btn-pushover');
+  if (btn) {
+    btn.classList.toggle('active', pushoverActive);
+    btn.disabled = analysisMode !== 'frame';
+    btn.title = analysisMode !== 'frame' ? '仅刚架模式可用' : '推覆分析';
+    btn.style.opacity = analysisMode !== 'frame' ? '0.5' : '1';
+    btn.style.cursor = analysisMode !== 'frame' ? 'not-allowed' : 'pointer';
+  }
+
+  const demoSection = document.getElementById('po-demo-section');
+  if (demoSection) {
+    demoSection.style.display = isPortalFramePreset() ? 'block' : 'none';
+  }
+}
+
+function enterPushoverMode() {
+  if (analysisMode !== 'frame') {
+    alert('推覆分析仅在刚架模式下可用');
+    return;
+  }
+  if (modalActive) exitModalMode();
+  if (influenceActive) exitInfluenceMode();
+  if (constructionActive) exitConstructionMode();
+  if (topoActive) exitTopoMode();
+  if (compareActive) exitCompareMode();
+  if (sectionStressActive) hideSectionStressView();
+
+  pushoverActive = true;
+  renderer.pushoverActive = true;
+
+  pushoverSavedNodes = deepClone(nodes.map(n => ({
+    id: n.id, x: n.x, y: n.y, support: n.support,
+    fx: n.fx, fy: n.fy, m: n.m,
+    dx: n.dx, dy: n.dy, dtheta: n.dtheta
+  })));
+  pushoverSavedMembers = deepClone(members.map(m => ({
+    id: m.id, node1Id: m.node1Id, node2Id: m.node2Id,
+    length: m.length, angle: m.angle,
+    E: m.E, A: m.A, I: m.I, h: m.h, rho: m.rho,
+    release1: m.release1, release2: m.release2, q: m.q,
+    axialForce: m.axialForce, stress: m.stress,
+    sectionName: m.sectionName, b: m.b, Wpl: m.Wpl
+  })));
+  pushoverSavedFrameResults = frameResults ? deepClone(frameResults) : null;
+  pushoverSavedHasResults = hasResults;
+
+  document.getElementById('btn-pushover').classList.add('active');
+  document.getElementById('pushover-panel').classList.remove('hidden');
+  document.getElementById('pushover-timeline-container').classList.remove('hidden');
+  pushoverPanelVisible = true;
+
+  switchPanelTab('pushover');
+
+  updatePushoverButtonStates();
+  updatePushoverControlsState();
+  updatePushoverTimeline();
+  drawPushoverCapacityCurve();
+  render();
+  updateStatus('推覆分析模式: 设置参数后点击"开始推覆"');
+}
+
+function exitPushoverMode() {
+  stopPushoverAnalysis();
+  pushoverActive = false;
+  renderer.pushoverActive = false;
+  renderer.pushoverHinges = [];
+  renderer.pushoverHighlightStep = -1;
+
+  if (pushoverSavedNodes) {
+    pushoverSavedNodes.forEach(sn => {
+      const n = nodes.find(x => x.id === sn.id);
+      if (n) {
+        n.fx = sn.fx; n.fy = sn.fy; n.m = sn.m;
+        n.dx = sn.dx; n.dy = sn.dy; n.dtheta = sn.dtheta;
+      }
+    });
+  }
+  if (pushoverSavedMembers) {
+    pushoverSavedMembers.forEach(sm => {
+      const m = members.find(x => x.id === sm.id);
+      if (m) {
+        m.release1 = sm.release1; m.release2 = sm.release2;
+        m.q = sm.q; m.axialForce = sm.axialForce; m.stress = sm.stress;
+      }
+    });
+  }
+  frameResults = pushoverSavedFrameResults;
+  renderer.frameResults = frameResults;
+  hasResults = pushoverSavedHasResults;
+  renderer.hasResults = hasResults;
+  if (frameResults) {
+    maxForce = frameResults.maxForce || 0;
+    maxMoment = frameResults.maxMoment || 0;
+    renderer.maxForce = maxForce;
+    renderer.maxMoment = maxMoment;
+  }
+
+  pushoverAnalyzer = null;
+  pushoverCurrentStep = -1;
+  pushoverSavedNodes = null;
+  pushoverSavedMembers = null;
+  pushoverSavedFrameResults = null;
+
+  document.getElementById('btn-pushover').classList.remove('active');
+  document.getElementById('pushover-panel').classList.add('hidden');
+  document.getElementById('pushover-timeline-container').classList.add('hidden');
+  pushoverPanelVisible = false;
+
+  hideTooltip();
+  updatePushoverButtonStates();
+  updatePushoverControlsState();
+  render();
+  updateResultsDisplay();
+  updateStatus('已退出推覆分析模式');
+}
+
+function updatePushoverControlsState() {
+  const canStart = !pushoverRunning && analysisMode === 'frame';
+  document.getElementById('btn-po-start').disabled = !canStart;
+  document.getElementById('btn-po-stop').style.display = pushoverRunning ? 'block' : 'none';
+  document.getElementById('btn-po-reset').style.display = (pushoverAnalyzer && !pushoverRunning) ? 'block' : 'none';
+
+  const settingsDisabled = pushoverRunning || pushoverAnalyzer !== null;
+  document.getElementById('po-pattern').disabled = settingsDisabled;
+  document.getElementById('po-direction').disabled = settingsDisabled;
+  document.getElementById('po-force-inc').disabled = settingsDisabled;
+  document.getElementById('po-max-steps').disabled = settingsDisabled;
+  document.getElementById('po-fy').disabled = settingsDisabled;
+
+  document.getElementById('po-progress-section').style.display = pushoverRunning ? 'block' : 'none';
+}
+
+function updatePushoverStatusDisplay(stepData) {
+  document.getElementById('po-cur-step').textContent = stepData ? stepData.step + 1 : 0;
+  document.getElementById('po-cur-shear').textContent = stepData ? (stepData.baseShear / 1000).toFixed(2) : '0';
+  document.getElementById('po-cur-disp').textContent = stepData ? (stepData.topDisplacement * 1000).toFixed(2) : '0';
+  document.getElementById('po-cur-hinges').textContent = pushoverAnalyzer ? pushoverAnalyzer.hinges.length : 0;
+}
+
+function updatePushoverTimeline() {
+  const slider = document.getElementById('pushover-timeline-slider');
+  const info = document.getElementById('pushover-step-info');
+  const max = pushoverAnalyzer ? Math.max(0, pushoverAnalyzer.steps.length - 1) : 0;
+  slider.max = max;
+  const curStep = pushoverCurrentStep >= 0 ? pushoverCurrentStep : max;
+  slider.value = curStep;
+  if (pushoverAnalyzer && pushoverAnalyzer.steps.length > 0 && curStep >= 0 && curStep < pushoverAnalyzer.steps.length) {
+    const s = pushoverAnalyzer.steps[curStep];
+    info.textContent = `步${curStep + 1}/${pushoverAnalyzer.steps.length}  V=${(s.baseShear / 1000).toFixed(1)}kN  Δ=${(s.topDisplacement * 1000).toFixed(1)}mm  铰=${pushoverAnalyzer.getHingesAtStep(curStep).length}`;
+  } else {
+    info.textContent = `0/0`;
+  }
+}
+
+function drawPushoverCapacityCurve() {
+  const canvas = document.getElementById('pushover-canvas');
+  if (!canvas || !pushoverPanelVisible) return;
+  const curve = pushoverAnalyzer ? pushoverAnalyzer.capacityCurve : [];
+  const highlight = pushoverCurrentStep >= 0 ? pushoverCurrentStep :
+    (pushoverAnalyzer && pushoverAnalyzer.steps.length > 0 ? pushoverAnalyzer.steps.length - 1 : -1);
+  Renderer.drawCapacityCurve(canvas, curve, { highlightStep: highlight });
+}
+
+function applyPushoverStepToScene(stepIndex) {
+  if (!pushoverAnalyzer) return;
+  if (stepIndex < 0 || stepIndex >= pushoverAnalyzer.steps.length) return;
+
+  const step = pushoverAnalyzer.getStep(stepIndex);
+  if (!step) return;
+
+  step.nodes.forEach(sn => {
+    const n = nodes.find(x => x.id === sn.id);
+    if (n) {
+      n.fx = sn.fx; n.fy = sn.fy; n.m = sn.m;
+      n.dx = sn.dx; n.dy = sn.dy; n.dtheta = sn.dtheta || 0;
+    }
+  });
+
+  step.members.forEach(sm => {
+    const m = members.find(x => x.id === sm.id);
+    if (m) {
+      m.axialForce = sm.axialForce; m.stress = sm.stress;
+    }
+  });
+
+  const hingesAtStep = pushoverAnalyzer.getHingesAtStep(stepIndex);
+  members.forEach(m => {
+    const h1 = hingesAtStep.find(h => h.memberId === m.id && h.end === 1);
+    const h2 = hingesAtStep.find(h => h.memberId === m.id && h.end === 2);
+    m.release1 = h1 ? true : (pushoverSavedMembers.find(s => s.id === m.id)?.release1 || false);
+    m.release2 = h2 ? true : (pushoverSavedMembers.find(s => s.id === m.id)?.release2 || false);
+  });
+
+  if (step.results) {
+    frameResults = step.results;
+    renderer.frameResults = frameResults;
+    maxForce = frameResults.maxForce || 0;
+    maxMoment = frameResults.maxMoment || 0;
+    renderer.maxForce = maxForce;
+    renderer.maxMoment = maxMoment;
+    hasResults = true;
+    renderer.hasResults = true;
+  }
+
+  renderer.pushoverHinges = hingesAtStep;
+  renderer.pushoverHighlightStep = stepIndex;
+  pushoverCurrentStep = stepIndex;
+
+  updatePushoverStatusDisplay(step);
+}
+
+function startPushoverAnalysis() {
+  if (analysisMode !== 'frame') {
+    alert('推覆分析仅在刚架模式下可用');
+    return;
+  }
+
+  const pattern = document.getElementById('po-pattern').value;
+  const direction = document.getElementById('po-direction').value;
+  const forceInc = parseFloat(document.getElementById('po-force-inc').value) || 5000;
+  const maxSteps = parseInt(document.getElementById('po-max-steps').value) || 100;
+  const fy = (parseFloat(document.getElementById('po-fy').value) || 235) * 1e6;
+
+  pushoverAnalyzer = new PushoverAnalyzer(nodes, members, {
+    pattern, direction, forceIncrement: forceInc, maxSteps, fy
+  });
+  pushoverRunning = true;
+  pushoverCurrentStep = -1;
+
+  document.getElementById('po-results-section').style.display = 'none';
+  updatePushoverControlsState();
+  updateStatus('推覆分析进行中...');
+
+  let frameCount = 0;
+  const runBatch = () => {
+    if (!pushoverRunning) return;
+
+    const batchSize = 3;
+    let anyNew = false;
+
+    for (let i = 0; i < batchSize; i++) {
+      if (pushoverAnalyzer.finished) break;
+      const result = pushoverAnalyzer.runStep();
+      anyNew = true;
+      if (!result) break;
+
+      const stepIdx = result.step;
+      applyPushoverStepToScene(stepIdx);
+
+      if (result.newHinges && result.newHinges.length > 0) {
+        const names = result.newHinges.map(h => `杆件#${h.memberId}${h.end === 1 ? '左端' : '右端'}`).join(', ');
+        updateStatus(`第${stepIdx + 1}步: 新塑性铰 → ${names}`);
+      }
+
+      if (result.isCollapse) {
+        updateStatus(`⚠ 结构在第${stepIdx + 1}步形成机构，已倒塌!`);
+        break;
+      }
+    }
+
+    if (anyNew) {
+      const total = pushoverAnalyzer.steps.length;
+      const pct = Math.min(100, (total / maxSteps) * 100);
+      document.getElementById('po-progress-fill').style.width = pct + '%';
+      document.getElementById('po-progress-text').textContent = `步骤 ${total} / ${maxSteps}`;
+
+      updatePushoverTimeline();
+      drawPushoverCapacityCurve();
+      render();
+    }
+
+    if (pushoverAnalyzer.finished) {
+      pushoverRunning = false;
+      finishPushoverAnalysis();
+      return;
+    }
+
+    pushoverTimer = setTimeout(runBatch, 0);
+  };
+
+  runBatch();
+}
+
+function stopPushoverAnalysis() {
+  pushoverRunning = false;
+  if (pushoverTimer) {
+    clearTimeout(pushoverTimer);
+    pushoverTimer = null;
+  }
+  updatePushoverControlsState();
+}
+
+function finishPushoverAnalysis() {
+  stopPushoverAnalysis();
+  updatePushoverControlsState();
+  updatePushoverTimeline();
+  drawPushoverCapacityCurve();
+  render();
+  showPushoverResults();
+}
+
+function showPushoverResults() {
+  if (!pushoverAnalyzer) return;
+  const summary = pushoverAnalyzer.getSummary();
+  const section = document.getElementById('po-results-section');
+  section.style.display = 'block';
+
+  const summaryHtml = `
+    <div class="po-status-item">总步数: <span>${summary.totalSteps}</span></div>
+    <div class="po-status-item">最大基底剪力: <span>${(summary.maxBaseShear / 1000).toFixed(2)} kN</span></div>
+    <div class="po-status-item">顶点极限位移: <span>${(summary.ultimateDisplacement * 1000).toFixed(2)} mm</span></div>
+    <div class="po-status-item">塑性铰总数: <span>${summary.totalHinges}</span></div>
+    <div class="po-status-item">结构状态: <span style="color:${summary.collapsed ? '#c62828' : '#2e7d32'}">${summary.collapsed ? '已倒塌' : '未倒塌'}</span></div>
+  `;
+  document.getElementById('po-result-summary').innerHTML = `<div class="po-status-box">${summaryHtml}</div>`;
+
+  const hingeList = document.getElementById('po-hinge-list');
+  if (summary.hingeFormationSteps.length === 0) {
+    hingeList.innerHTML = '<div style="font-size:11px;color:#999;padding:8px;">未形成塑性铰</div>';
+  } else {
+    hingeList.innerHTML = summary.hingeFormationSteps.map(step => {
+      const hingeNames = step.hinges.map(h =>
+        `<div class="po-hinge-item">
+          <span class="po-hinge-step">第${step.step + 1}步</span>
+          杆件#${h.memberId}${h.end === 1 ? '左端' : '右端'}
+          <small style="color:#666;">M=${(Math.abs(h.moment) / 1000).toFixed(2)}kN·m / Mp=${(h.Mp / 1000).toFixed(2)}kN·m</small>
+        </div>`
+      ).join('');
+      return hingeNames;
+    }).join('');
+  }
+
+  const msg = summary.collapsed
+    ? `推覆完成: ${summary.totalSteps}步, 最大剪力${(summary.maxBaseShear / 1000).toFixed(1)}kN, 形成${summary.totalHinges}个塑性铰后倒塌`
+    : `推覆完成: ${summary.totalSteps}步, 最大剪力${(summary.maxBaseShear / 1000).toFixed(1)}kN, 共${summary.totalHinges}个塑性铰`;
+  updateStatus(msg);
+}
+
+function resetPushoverAnalysis() {
+  stopPushoverAnalysis();
+
+  if (pushoverSavedNodes) {
+    pushoverSavedNodes.forEach(sn => {
+      const n = nodes.find(x => x.id === sn.id);
+      if (n) {
+        n.fx = sn.fx; n.fy = sn.fy; n.m = sn.m;
+        n.dx = sn.dx; n.dy = sn.dy; n.dtheta = sn.dtheta;
+      }
+    });
+  }
+  if (pushoverSavedMembers) {
+    pushoverSavedMembers.forEach(sm => {
+      const m = members.find(x => x.id === sm.id);
+      if (m) {
+        m.release1 = sm.release1; m.release2 = sm.release2;
+        m.q = sm.q; m.axialForce = sm.axialForce; m.stress = sm.stress;
+      }
+    });
+  }
+  frameResults = pushoverSavedFrameResults;
+  renderer.frameResults = frameResults;
+  hasResults = pushoverSavedHasResults;
+  renderer.hasResults = hasResults;
+  if (frameResults) {
+    maxForce = frameResults.maxForce || 0;
+    maxMoment = frameResults.maxMoment || 0;
+    renderer.maxForce = maxForce;
+    renderer.maxMoment = maxMoment;
+  }
+
+  pushoverAnalyzer = null;
+  pushoverCurrentStep = -1;
+  renderer.pushoverHinges = [];
+  renderer.pushoverHighlightStep = -1;
+
+  document.getElementById('po-progress-fill').style.width = '0%';
+  document.getElementById('po-progress-text').textContent = '步骤 0 / 0';
+  document.getElementById('po-results-section').style.display = 'none';
+  updatePushoverStatusDisplay(null);
+
+  updatePushoverControlsState();
+  updatePushoverTimeline();
+  drawPushoverCapacityCurve();
+  render();
+  updateStatus('推覆分析已重置');
+}
+
+function demoPushoverAnalysis() {
+  document.getElementById('po-pattern').value = 'triangle';
+  document.getElementById('po-direction').value = 'right';
+  document.getElementById('po-force-inc').value = 3000;
+  document.getElementById('po-max-steps').value = 80;
+  document.getElementById('po-fy').value = 235;
+  startPushoverAnalysis();
+}
+
 canvas.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   if (compareActive) return;
+  if (pushoverActive) return;
 
   hideContextMenu();
 
@@ -3579,6 +3999,27 @@ canvas.addEventListener('mousedown', (e) => {
 canvas.addEventListener('mousemove', (e) => {
   if (compareActive) return;
   const pos = getMousePos(e);
+
+  if (pushoverActive) {
+    const hinge = renderer.findHingeAtScreenPos(pos.x, pos.y);
+    if (hinge) {
+      const tooltip = document.getElementById('tooltip');
+      const html = `<strong>塑性铰</strong><br/>
+        杆件 #${hinge.memberId} ${hinge.end === 1 ? '左端' : '右端'}<br/>
+        形成步骤: 第${hinge.step + 1}步<br/>
+        荷载水平: ${(hinge.loadLevel / 1000).toFixed(1)} kN<br/>
+        弯矩: ${(Math.abs(hinge.moment) / 1000).toFixed(2)} / ${(hinge.Mp / 1000).toFixed(2)} kN·m`;
+      tooltip.innerHTML = html;
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY + 12) + 'px';
+      tooltip.classList.remove('hidden');
+      canvas.style.cursor = 'pointer';
+    } else {
+      hideTooltip();
+      canvas.style.cursor = 'default';
+    }
+    return;
+  }
 
   if (!influenceActive && !topoActive) {
     updateTooltip(e);
@@ -6299,6 +6740,97 @@ window.addEventListener('resize', () => {
     if (thLoadType === 'piecewise') {
       resizeThPiecewiseCanvas();
     }
+  }
+  if (pushoverPanelVisible) {
+    if (_pushoverResizeTimer) clearTimeout(_pushoverResizeTimer);
+    _pushoverResizeTimer = setTimeout(drawPushoverCapacityCurve, 100);
+  }
+});
+
+document.getElementById('btn-pushover').addEventListener('click', () => {
+  if (pushoverActive) {
+    exitPushoverMode();
+  } else {
+    enterPushoverMode();
+  }
+});
+
+document.getElementById('btn-po-start').addEventListener('click', startPushoverAnalysis);
+document.getElementById('btn-po-stop').addEventListener('click', stopPushoverAnalysis);
+document.getElementById('btn-po-reset').addEventListener('click', resetPushoverAnalysis);
+document.getElementById('btn-po-demo').addEventListener('click', demoPushoverAnalysis);
+
+document.getElementById('btn-pushover-panel-close').addEventListener('click', () => {
+  document.getElementById('pushover-panel').classList.add('hidden');
+  pushoverPanelVisible = false;
+});
+
+document.getElementById('pushover-timeline-slider').addEventListener('input', (e) => {
+  if (!pushoverAnalyzer) return;
+  const stepIdx = parseInt(e.target.value);
+  applyPushoverStepToScene(stepIdx);
+  updatePushoverTimeline();
+  drawPushoverCapacityCurve();
+  render();
+});
+
+document.querySelectorAll('.panel-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    switchPanelTab(tab.dataset.tab);
+  });
+});
+
+const pushoverCanvas = document.getElementById('pushover-canvas');
+const pushoverTooltip = document.getElementById('pushover-tooltip');
+
+pushoverCanvas.addEventListener('mousemove', (e) => {
+  if (!pushoverAnalyzer || !pushoverPanelVisible) {
+    pushoverTooltip.classList.add('hidden');
+    return;
+  }
+  const rect = pushoverCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const idx = Renderer.findCapacityCurvePoint(pushoverCanvas, pushoverAnalyzer.capacityCurve, x, y);
+  if (idx >= 0) {
+    const p = pushoverAnalyzer.capacityCurve[idx];
+    let html = `<strong>第 ${idx + 1} 步</strong><br/>`;
+    html += `基底剪力: ${(p.baseShear / 1000).toFixed(2)} kN<br/>`;
+    html += `顶点位移: ${(p.topDisplacement * 1000).toFixed(2)} mm`;
+    if (p.isHingeFormation && p.newHinges.length > 0) {
+      const names = p.newHinges.map(h => `#${h.memberId}${h.end === 1 ? '左' : '右'}`).join(', ');
+      html += `<br/><span style="color:#ff9800;">塑性铰: ${names}</span>`;
+    }
+    if (p.isCollapse) {
+      html += `<br/><span style="color:#f44336;">⚠ 倒塌点</span>`;
+    }
+    pushoverTooltip.innerHTML = html;
+    pushoverTooltip.style.left = (e.clientX + 12) + 'px';
+    pushoverTooltip.style.top = (e.clientY + 12) + 'px';
+    pushoverTooltip.classList.remove('hidden');
+    pushoverCanvas.style.cursor = 'pointer';
+  } else {
+    pushoverTooltip.classList.add('hidden');
+    pushoverCanvas.style.cursor = 'default';
+  }
+});
+
+pushoverCanvas.addEventListener('mouseleave', () => {
+  pushoverTooltip.classList.add('hidden');
+});
+
+pushoverCanvas.addEventListener('click', (e) => {
+  if (!pushoverAnalyzer || !pushoverPanelVisible) return;
+  const rect = pushoverCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const idx = Renderer.findCapacityCurvePoint(pushoverCanvas, pushoverAnalyzer.capacityCurve, x, y);
+  if (idx >= 0 && idx < pushoverAnalyzer.steps.length) {
+    document.getElementById('pushover-timeline-slider').value = idx;
+    applyPushoverStepToScene(idx);
+    updatePushoverTimeline();
+    drawPushoverCapacityCurve();
+    render();
   }
 });
 

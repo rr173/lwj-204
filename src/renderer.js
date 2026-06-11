@@ -31,6 +31,10 @@ export class Renderer {
     this.topoHoverDensity = null;
     this.topoHoverEdge = null;
     this.compareData = null;
+    this.pushoverActive = false;
+    this.pushoverHinges = [];
+    this.pushoverHighlightStep = -1;
+    this._hoveredHinge = null;
   }
 
   resize() {
@@ -936,6 +940,10 @@ export class Renderer {
     if (this.topoData || this.topoDragRect) {
       this.drawTopoVisualization();
     }
+
+    if (this.pushoverActive) {
+      this.drawPushoverHinges(nodes, members, nodeMap);
+    }
   }
 
   drawTopoVisualization() {
@@ -1344,5 +1352,277 @@ export class Renderer {
       ctx.fill();
       ctx.stroke();
     }
+  }
+
+  drawPushoverHinges(nodes, members, nodeMap) {
+    if (!this.pushoverHinges || this.pushoverHinges.length === 0) return;
+
+    const memberMap = new Map();
+    members.forEach(m => memberMap.set(m.id, m));
+
+    this.pushoverHinges.forEach(hinge => {
+      const mem = memberMap.get(hinge.memberId);
+      if (!mem) return;
+
+      let hingeNode;
+      if (hinge.end === 1) {
+        hingeNode = nodeMap.get(mem.node1Id);
+      } else {
+        hingeNode = nodeMap.get(mem.node2Id);
+      }
+      if (!hingeNode) return;
+
+      let hx = hingeNode.x;
+      let hy = hingeNode.y;
+      if (hingeNode.dx !== undefined && this.showDeformed) {
+        hx += hingeNode.dx * this.displacementScale;
+        hy += hingeNode.dy * this.displacementScale;
+      }
+
+      const isNew = this.pushoverHighlightStep >= 0 &&
+        hinge.step === this.pushoverHighlightStep;
+
+      const r = isNew ? 10 : 7;
+
+      this.ctx.beginPath();
+      this.ctx.arc(hx, hy, r, 0, Math.PI * 2);
+      this.ctx.fillStyle = isNew ? '#ff1744' : '#e53935';
+      this.ctx.fill();
+      this.ctx.strokeStyle = isNew ? '#b71c1c' : '#c62828';
+      this.ctx.lineWidth = isNew ? 3 : 2;
+      this.ctx.stroke();
+
+      if (isNew) {
+        this.ctx.beginPath();
+        this.ctx.arc(hx, hy, r + 4, 0, Math.PI * 2);
+        this.ctx.strokeStyle = 'rgba(255, 23, 68, 0.5)';
+        this.ctx.lineWidth = 2;
+        this.ctx.setLineDash([3, 3]);
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+      }
+
+      hinge._screenX = hx;
+      hinge._screenY = hy;
+      hinge._radius = r;
+    });
+  }
+
+  findHingeAtScreenPos(x, y) {
+    if (!this.pushoverHinges) return null;
+    for (let i = this.pushoverHinges.length - 1; i >= 0; i--) {
+      const h = this.pushoverHinges[i];
+      if (h._screenX === undefined) continue;
+      const dx = x - h._screenX;
+      const dy = y - h._screenY;
+      if (Math.sqrt(dx * dx + dy * dy) <= (h._radius || 7) + 3) {
+        return h;
+      }
+    }
+    return null;
+  }
+
+  static drawCapacityCurve(canvas, capacityCurve, options = {}) {
+    if (!canvas || !capacityCurve || capacityCurve.length === 0) return;
+
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+
+    const W = rect.width;
+    const H = rect.height;
+    const padding = { left: 60, right: 30, top: 25, bottom: 45 };
+    const plotW = W - padding.left - padding.right;
+    const plotH = H - padding.top - padding.bottom;
+
+    let maxDisp = 0, maxShear = 0;
+    capacityCurve.forEach(p => {
+      if (p.topDisplacement > maxDisp) maxDisp = p.topDisplacement;
+      if (p.baseShear > maxShear) maxShear = p.baseShear;
+    });
+    if (maxDisp < 0.001) maxDisp = 0.001;
+    if (maxShear < 1) maxShear = 1;
+    maxDisp *= 1.1;
+    maxShear *= 1.1;
+
+    const dispToX = d => padding.left + (d / maxDisp) * plotW;
+    const shearToY = s => padding.top + plotH - (s / maxShear) * plotH;
+
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.strokeStyle = '#f5f5f5';
+    ctx.lineWidth = 1;
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#999';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+
+    const numYTicks = 5;
+    for (let i = 0; i <= numYTicks; i++) {
+      const s = (maxShear / numYTicks) * i;
+      const y = shearToY(s);
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(W - padding.right, y);
+      ctx.stroke();
+      ctx.fillText(`${(s / 1000).toFixed(1)}`, padding.left - 6, y);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const numXTicks = 5;
+    for (let i = 0; i <= numXTicks; i++) {
+      const d = (maxDisp / numXTicks) * i;
+      const x = dispToX(d);
+      ctx.beginPath();
+      ctx.moveTo(x, padding.top);
+      ctx.lineTo(x, H - padding.bottom);
+      ctx.stroke();
+      ctx.fillText(`${(d * 1000).toFixed(0)}`, x, H - padding.bottom + 6);
+    }
+
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, padding.top);
+    ctx.lineTo(padding.left, H - padding.bottom);
+    ctx.lineTo(W - padding.right, H - padding.bottom);
+    ctx.stroke();
+
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('顶点位移 (mm)', W / 2, H - 12);
+    ctx.save();
+    ctx.translate(14, H / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('基底剪力 (kN)', 0, 0);
+    ctx.restore();
+
+    if (capacityCurve.length < 2) return;
+
+    const grad = ctx.createLinearGradient(padding.left, 0, W - padding.right, 0);
+    grad.addColorStop(0, '#1565c0');
+    grad.addColorStop(0.5, '#ff9800');
+    grad.addColorStop(1, '#e53935');
+
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    capacityCurve.forEach((p, i) => {
+      const x = dispToX(p.topDisplacement);
+      const y = shearToY(p.baseShear);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    capacityCurve.forEach(p => {
+      if (p.isCollapse) {
+        const x = dispToX(p.topDisplacement);
+        const y = shearToY(p.baseShear);
+        ctx.beginPath();
+        ctx.arc(x, y, 10, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(244, 67, 54, 0.2)';
+        ctx.fill();
+        ctx.strokeStyle = '#f44336';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#c62828';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('倒塌点', x + 12, y - 5);
+      }
+    });
+
+    capacityCurve.forEach(p => {
+      if (p.isHingeFormation && p.newHinges && p.newHinges.length > 0) {
+        const x = dispToX(p.topDisplacement);
+        const y = shearToY(p.baseShear);
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff9800';
+        ctx.fill();
+        ctx.strokeStyle = '#e65100';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        const names = p.newHinges.map(h => `#${h.memberId}${h.end === 1 ? '左' : '右'}`).join(',');
+        ctx.fillStyle = '#e65100';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(names, x, y - 12);
+      }
+    });
+
+    if (options.highlightStep !== undefined && options.highlightStep >= 0) {
+      const p = capacityCurve[options.highlightStep];
+      if (p) {
+        const x = dispToX(p.topDisplacement);
+        const y = shearToY(p.baseShear);
+        ctx.beginPath();
+        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(33, 150, 243, 0.3)';
+        ctx.fill();
+        ctx.strokeStyle = '#2196f3';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(33, 150, 243, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x, H - padding.bottom);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(padding.left, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  static findCapacityCurvePoint(canvas, capacityCurve, mouseX, mouseY) {
+    if (!canvas || !capacityCurve) return -1;
+    const rect = canvas.getBoundingClientRect();
+    const W = rect.width;
+    const H = rect.height;
+    const padding = { left: 60, right: 30, top: 25, bottom: 45 };
+    const plotW = W - padding.left - padding.right;
+    const plotH = H - padding.top - padding.bottom;
+
+    let maxDisp = 0, maxShear = 0;
+    capacityCurve.forEach(p => {
+      if (p.topDisplacement > maxDisp) maxDisp = p.topDisplacement;
+      if (p.baseShear > maxShear) maxShear = p.baseShear;
+    });
+    maxDisp *= 1.1;
+    maxShear *= 1.1;
+
+    if (maxDisp < 0.001 || maxShear < 1) return -1;
+
+    const dispToX = d => padding.left + (d / maxDisp) * plotW;
+    const shearToY = s => padding.top + plotH - (s / maxShear) * plotH;
+
+    let nearestIdx = -1;
+    let minDist = 12;
+
+    capacityCurve.forEach((p, i) => {
+      const x = dispToX(p.topDisplacement);
+      const y = shearToY(p.baseShear);
+      const dist = Math.sqrt((mouseX - x) ** 2 + (mouseY - y) ** 2);
+      if (dist < minDist) {
+        minDist = dist;
+        nearestIdx = i;
+      }
+    });
+
+    return nearestIdx;
   }
 }
