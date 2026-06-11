@@ -2515,3 +2515,179 @@ body {
   font-family: 'Menlo', 'Consolas', monospace;
   color: #555;
 }
+
+.reaction-toggle-row {
+  margin-bottom: 10px;
+}
+
+.reaction-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
+}
+
+.reaction-toggle-label input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.reaction-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-bottom: 10px;
+}
+
+.reaction-table th,
+.reaction-table td {
+  border: 1px solid #ddd;
+  padding: 5px 6px;
+  text-align: center;
+}
+
+.reaction-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+  color: #555;
+  font-size: 10px;
+}
+
+.reaction-table td {
+  font-family: 'Menlo', 'Consolas', monospace;
+  color: #444;
+}
+
+.reaction-table td.rx-col {
+  color: #e64a19;
+}
+
+.reaction-table td.ry-col {
+  color: #1565c0;
+}
+
+.reaction-table td.m-col {
+  color: #2e7d32;
+}
+
+.reaction-table .no-reactions {
+  color: #999;
+  font-style: italic;
+  padding: 12px 0;
+  text-align: center;
+}
+
+.reaction-sum-row td {
+  background: #fff8e1;
+  font-weight: 700;
+  border-top: 2px solid #fbc02d;
+}
+
+.equilibrium-check {
+  padding: 10px;
+  background: #f1f8e9;
+  border: 1px solid #c5e1a5;
+  border-radius: 4px;
+  margin-top: 8px;
+}
+
+.equilibrium-check.warn {
+  background: #fff8e1;
+  border-color: #ffe082;
+}
+
+.equilibrium-check.error {
+  background: #ffebee;
+  border-color: #ef9a9a;
+}
+
+.equilibrium-check-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #33691e;
+  margin-bottom: 6px;
+}
+
+.equilibrium-check.warn .equilibrium-check-title {
+  color: #f57f17;
+}
+
+.equilibrium-check.error .equilibrium-check-title {
+  color: #c62828;
+}
+
+.equilibrium-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  font-size: 11px;
+  color: #555;
+}
+
+.equilibrium-label {
+  font-weight: 500;
+}
+
+.equilibrium-values {
+  font-family: 'Menlo', 'Consolas', monospace;
+  text-align: right;
+  font-size: 10px;
+}
+
+.equilibrium-error {
+  font-weight: 700;
+  margin-left: 6px;
+}
+
+.equilibrium-error.good {
+  color: #2e7d32;
+}
+
+.equilibrium-error.warn {
+  color: #ef6c00;
+}
+
+.equilibrium-error.bad {
+  color: #c62828;
+}
+
+.reaction-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+}
+
+.reaction-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #666;
+}
+
+.reaction-legend-color {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.reaction-legend-color.rx {
+  background: #ff5722;
+}
+
+.reaction-legend-color.ry {
+  background: #2196f3;
+}
+
+.reaction-legend-color.m {
+  background: #4caf50;
+  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+}

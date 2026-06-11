@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>结构力学分析器 - 桁架/刚架</title>
-  <script type="module" crossorigin src="/assets/index-DjB8Njud.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-B3E91SYq.css">
+  <script type="module" crossorigin src="/assets/index-DLsyZWPC.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BncfrpER.css">
 </head>
 <body>
   <div class="app-container">
@@ -537,6 +537,16 @@
       <div class="panel-section" id="results-section">
         <h3>求解结果</h3>
         <div id="results-content">点击"求解"按钮开始计算</div>
+      </div>
+      <div class="panel-section" id="reaction-section" style="display:none;">
+        <h3>支座反力</h3>
+        <div id="reaction-toggle-row" class="reaction-toggle-row">
+          <label class="reaction-toggle-label">
+            <input type="checkbox" id="toggle-reaction-arrows" checked />
+            显示反力箭头
+          </label>
+        </div>
+        <div id="reaction-content"></div>
       </div>
       <div class="panel-section" id="modal-section" style="display:none;">
         <h3>模态分析结果</h3>

@@ -142,19 +142,45 @@ export function solveTruss(nodes, members) {
     maxForce = Math.max(maxForce, Math.abs(axialForce));
   }
   
+  const R_full = multiplyMatrixVector(K, displacement);
+  const reactions = new Map();
+  for (const node of nodes) {
+    const idx = nodeMap.get(node.id).index;
+    const dofX = idx * 2;
+    const dofY = idx * 2 + 1;
+    let rx = 0, ry = 0;
+    if (node.support === 'pinned') {
+      rx = R_full[dofX] - F[dofX];
+      ry = R_full[dofY] - F[dofY];
+    } else if (node.support === 'roller') {
+      ry = R_full[dofY] - F[dofY];
+    }
+    if (rx !== 0 || ry !== 0 || node.support !== 'free') {
+      reactions.set(node.id, { rx, ry, m: 0 });
+    }
+  }
+
+  const totalExternalFx = nodes.reduce((s, n) => s + (n.fx || 0), 0);
+  const totalExternalFy = nodes.reduce((s, n) => s + (n.fy || 0), 0);
+
   return {
     nodes: nodes.map(n => ({
       id: n.id,
       dx: n.dx,
       dy: n.dy,
-      reaction: null
+      reaction: reactions.get(n.id) || null
     })),
     members: members.map(m => ({
       id: m.id,
       axialForce: m.axialForce,
       stress: m.stress
     })),
-    maxForce
+    maxForce,
+    externalForces: {
+      fx: totalExternalFx,
+      fy: totalExternalFy,
+      m: 0
+    }
   };
 }
 
@@ -352,16 +378,74 @@ export function solveFrame(nodes, members) {
     });
   }
 
+  const R_full = multiplyMatrixVector(K, displacement);
+  const reactions = new Map();
+  for (const node of nodes) {
+    const idx = nodeMap.get(node.id).index;
+    const dofX = idx * 3;
+    const dofY = idx * 3 + 1;
+    const dofT = idx * 3 + 2;
+    let rx = 0, ry = 0, rm = 0;
+    if (node.support === 'fixed') {
+      rx = R_full[dofX] - F[dofX];
+      ry = R_full[dofY] - F[dofY];
+      rm = R_full[dofT] - F[dofT];
+    } else if (node.support === 'pinned') {
+      rx = R_full[dofX] - F[dofX];
+      ry = R_full[dofY] - F[dofY];
+    } else if (node.support === 'roller') {
+      ry = R_full[dofY] - F[dofY];
+    }
+    if (rx !== 0 || ry !== 0 || rm !== 0 || node.support !== 'free') {
+      reactions.set(node.id, { rx, ry, m: rm });
+    }
+  }
+
+  let totalExternalFx = 0;
+  let totalExternalFy = 0;
+  let totalExternalM = 0;
+  for (const node of nodes) {
+    totalExternalFx += node.fx || 0;
+    totalExternalFy += node.fy || 0;
+    totalExternalM += node.m || 0;
+  }
+  for (const member of members) {
+    if (member.q && Math.abs(member.q) > 1e-10) {
+      const node1 = nodeMap.get(member.node1Id);
+      const node2 = nodeMap.get(member.node2Id);
+      if (node1 && node2) {
+        const lengthInMeters = member.length * PIXEL_TO_METER;
+        const totalQ = member.q * lengthInMeters;
+        const dx = node2.x - node1.x;
+        const dy = node2.y - node1.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        const nx = -dy / len;
+        const ny = dx / len;
+        totalExternalFx += totalQ * nx / 2 + totalQ * nx / 2;
+        totalExternalFy += totalQ * ny / 2 + totalQ * ny / 2;
+        const midX = (node1.x + node2.x) / 2;
+        const midY = (node1.y + node2.y) / 2;
+        totalExternalM += (totalQ * nx / 2) * node1.y + (totalQ * nx / 2) * node2.y
+                        - (totalQ * ny / 2) * node1.x - (totalQ * ny / 2) * node2.x;
+      }
+    }
+  }
+
   return {
     nodes: nodes.map(n => ({
       id: n.id,
       dx: n.dx,
       dy: n.dy,
       dtheta: n.dtheta,
-      reaction: null
+      reaction: reactions.get(n.id) || null
     })),
     members: memberResults,
     maxForce,
-    maxMoment
+    maxMoment,
+    externalForces: {
+      fx: totalExternalFx,
+      fy: totalExternalFy,
+      m: totalExternalM
+    }
   };
 }

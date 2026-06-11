@@ -39,6 +39,8 @@ export class Renderer {
     this.pushoverHinges = [];
     this.pushoverHighlightStep = -1;
     this._hoveredHinge = null;
+    this.reactionResults = null;
+    this.showReactionArrows = true;
   }
 
   resize() {
@@ -1036,6 +1038,10 @@ export class Renderer {
     if (this.pushoverActive) {
       this.drawPushoverHinges(nodes, members, nodeMap);
     }
+
+    if (this.hasResults && this.showReactionArrows && this.reactionResults) {
+      this.drawReactionArrows(nodes);
+    }
   }
 
   drawTopoVisualization() {
@@ -1512,6 +1518,171 @@ export class Renderer {
       }
     }
     return null;
+  }
+
+  drawReactionArrows(nodes) {
+    if (!this.reactionResults || !this.reactionResults.nodes) return;
+
+    let maxRx = 0, maxRy = 0, maxM = 0;
+    for (const rn of this.reactionResults.nodes) {
+      if (rn.reaction) {
+        maxRx = Math.max(maxRx, Math.abs(rn.reaction.rx));
+        maxRy = Math.max(maxRy, Math.abs(rn.reaction.ry));
+        maxM = Math.max(maxM, Math.abs(rn.reaction.m));
+      }
+    }
+
+    const scaleForce = 0.005;
+    const scaleMoment = 0.003;
+    const minLen = 25;
+    const maxLen = 80;
+    const offset = 22;
+
+    const colorRx = '#ff5722';
+    const colorRy = '#2196f3';
+    const colorM = '#4caf50';
+
+    for (const rn of this.reactionResults.nodes) {
+      const node = nodes.find(n => n.id === rn.id);
+      if (!node || !rn.reaction) continue;
+      const { rx, ry, m } = rn.reaction;
+
+      const nx = node.x;
+      const ny = node.y;
+
+      if (Math.abs(rx) > 1e-6) {
+        const rawLen = Math.abs(rx) * scaleForce;
+        const len = Math.max(minLen, Math.min(maxLen, rawLen));
+        const dir = rx > 0 ? 1 : -1;
+
+        let startX, startY;
+        if (node.support === 'fixed') {
+          startX = nx - dir * offset;
+          startY = ny - 15;
+        } else {
+          startX = nx - dir * offset;
+          startY = ny + 10;
+        }
+        const endX = startX + dir * len;
+        const endY = startY;
+
+        this.ctx.strokeStyle = colorRx;
+        this.ctx.fillStyle = colorRx;
+        this.ctx.lineWidth = 3;
+        this.ctx.lineCap = 'round';
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(startX, startY);
+        this.ctx.lineTo(endX, endY);
+        this.ctx.stroke();
+
+        const headLen = 10;
+        this.ctx.beginPath();
+        this.ctx.moveTo(endX, endY);
+        this.ctx.lineTo(endX - dir * headLen, endY - headLen * 0.5);
+        this.ctx.lineTo(endX - dir * headLen, endY + headLen * 0.5);
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        this.ctx.font = 'bold 11px sans-serif';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'bottom';
+        this.ctx.fillStyle = colorRx;
+        const labelX = (startX + endX) / 2;
+        const labelY = startY - 4;
+        this.ctx.fillText(`${(rx / 1000).toFixed(2)}kN`, labelX, labelY);
+      }
+
+      if (Math.abs(ry) > 1e-6) {
+        const rawLen = Math.abs(ry) * scaleForce;
+        const len = Math.max(minLen, Math.min(maxLen, rawLen));
+        const dir = ry > 0 ? -1 : 1;
+
+        let startX, startY;
+        if (node.support === 'fixed') {
+          startX = nx + 18;
+          startY = ny + dir * offset;
+        } else {
+          startX = nx;
+          startY = ny + dir * offset;
+        }
+        const endX = startX;
+        const endY = startY + dir * len;
+
+        this.ctx.strokeStyle = colorRy;
+        this.ctx.fillStyle = colorRy;
+        this.ctx.lineWidth = 3;
+        this.ctx.lineCap = 'round';
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(startX, startY);
+        this.ctx.lineTo(endX, endY);
+        this.ctx.stroke();
+
+        const headLen = 10;
+        this.ctx.beginPath();
+        this.ctx.moveTo(endX, endY);
+        this.ctx.lineTo(endX - headLen * 0.5, endY - dir * headLen);
+        this.ctx.lineTo(endX + headLen * 0.5, endY - dir * headLen);
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        this.ctx.font = 'bold 11px sans-serif';
+        this.ctx.textAlign = 'left';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = colorRy;
+        const labelX = endX + 6;
+        const labelY = (startY + endY) / 2;
+        this.ctx.fillText(`${(ry / 1000).toFixed(2)}kN`, labelX, labelY);
+      }
+
+      if (this.analysisMode === 'frame' && Math.abs(m) > 1e-6) {
+        const rawRadius = Math.abs(m) * scaleMoment;
+        const r = Math.max(18, Math.min(45, rawRadius + 15));
+        const dir = m > 0 ? -1 : 1;
+
+        let cx, cy;
+        if (node.support === 'fixed') {
+          cx = nx;
+          cy = ny - 20;
+        } else {
+          cx = nx;
+          cy = ny + 25;
+        }
+
+        this.ctx.strokeStyle = colorM;
+        this.ctx.fillStyle = colorM;
+        this.ctx.lineWidth = 3;
+        this.ctx.lineCap = 'round';
+
+        const startAngle = dir > 0 ? Math.PI * 0.15 : Math.PI * 0.85;
+        const endAngle = dir > 0 ? Math.PI * 0.85 : Math.PI * 0.15;
+
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, r, startAngle, endAngle, dir < 0);
+        this.ctx.stroke();
+
+        const arrowAngle = dir > 0 ? endAngle : startAngle;
+        const tipX = cx + r * Math.cos(arrowAngle);
+        const tipY = cy + r * Math.sin(arrowAngle);
+        const headLen = 10;
+        const perpAngle = arrowAngle + (dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+        this.ctx.beginPath();
+        this.ctx.moveTo(tipX, tipY);
+        this.ctx.lineTo(tipX - headLen * Math.cos(arrowAngle) + headLen * 0.5 * Math.cos(perpAngle),
+                        tipY - headLen * Math.sin(arrowAngle) + headLen * 0.5 * Math.sin(perpAngle));
+        this.ctx.lineTo(tipX - headLen * Math.cos(arrowAngle) - headLen * 0.5 * Math.cos(perpAngle),
+                        tipY - headLen * Math.sin(arrowAngle) - headLen * 0.5 * Math.sin(perpAngle));
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        this.ctx.font = 'bold 11px sans-serif';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = colorM;
+        this.ctx.fillText(`${(m / 1000).toFixed(2)}kN·m`, cx, cy);
+      }
+    }
   }
 
   static drawCapacityCurve(canvas, capacityCurve, options = {}) {

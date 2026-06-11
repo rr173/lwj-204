@@ -258,6 +258,7 @@ function switchLoadCase(id) {
     renderer.hasResults = false;
     frameResults = null;
     renderer.frameResults = null;
+    renderer.reactionResults = null;
   }
   viewMode = 'single';
   renderer.viewMode = 'single';
@@ -294,6 +295,7 @@ function restoreResults(results) {
     });
     frameResults = results;
     renderer.frameResults = results;
+    renderer.reactionResults = results;
     maxForce = results.maxForce || 0;
     maxMoment = results.maxMoment || 0;
     renderer.maxForce = maxForce;
@@ -308,6 +310,7 @@ function restoreResults(results) {
     });
     frameResults = null;
     renderer.frameResults = null;
+    renderer.reactionResults = results;
     maxForce = results.maxForce;
     maxMoment = 0;
     renderer.maxForce = maxForce;
@@ -326,6 +329,7 @@ function solveCurrentLoadCase() {
       result = solveFrame(nodes, members);
       frameResults = result;
       renderer.frameResults = result;
+      renderer.reactionResults = result;
       maxForce = result.maxForce;
       maxMoment = result.maxMoment;
       renderer.maxForce = maxForce;
@@ -342,6 +346,7 @@ function solveCurrentLoadCase() {
       result = solveTruss(nodes, members);
       frameResults = null;
       renderer.frameResults = null;
+      renderer.reactionResults = result;
       maxForce = result.maxForce;
       maxMoment = 0;
       renderer.maxForce = maxForce;
@@ -526,6 +531,7 @@ function setAnalysisMode(mode) {
   renderer.hasResults = false;
   frameResults = null;
   renderer.frameResults = null;
+  renderer.reactionResults = null;
   envelopeData = null;
   renderer.envelopeData = null;
 
@@ -3650,6 +3656,151 @@ function updateResultsDisplay() {
   }
 
   container.innerHTML = html;
+  updateReactionDisplay();
+}
+
+function updateReactionDisplay() {
+  const section = document.getElementById('reaction-section');
+  const content = document.getElementById('reaction-content');
+
+  if (viewMode === 'envelope' || !hasResults || !renderer.reactionResults) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+
+  const result = renderer.reactionResults;
+  const supportNodes = nodes.filter(n => n.support && n.support !== 'free');
+  const reactionsData = [];
+  let totalRx = 0, totalRy = 0, totalM = 0;
+
+  for (const sn of supportNodes) {
+    const rn = result.nodes.find(n => n.id === sn.id);
+    const reaction = rn ? rn.reaction : null;
+    const rx = reaction ? reaction.rx : 0;
+    const ry = reaction ? reaction.ry : 0;
+    const rm = (reaction && analysisMode === 'frame') ? reaction.m : 0;
+    totalRx += rx;
+    totalRy += ry;
+    totalM += rm;
+    reactionsData.push({ node: sn, rx, ry, m: rm });
+  }
+
+  let html = '';
+
+  html += '<table class="reaction-table">';
+  html += '<thead><tr>';
+  html += '<th>节点</th>';
+  html += '<th>支座</th>';
+  html += '<th>Rx (kN)</th>';
+  html += '<th>Ry (kN)</th>';
+  if (analysisMode === 'frame') {
+    html += '<th>M (kN·m)</th>';
+  }
+  html += '</tr></thead>';
+  html += '<tbody>';
+
+  if (reactionsData.length === 0) {
+    const cols = analysisMode === 'frame' ? 5 : 4;
+    html += `<tr><td colspan="${cols}" class="no-reactions">未找到支座节点</td></tr>`;
+  } else {
+    for (const rd of reactionsData) {
+      html += '<tr>';
+      html += `<td><strong>#${rd.node.id}</strong></td>`;
+      const supportText = rd.node.support === 'fixed' ? '固定' :
+                          rd.node.support === 'pinned' ? '铰支' :
+                          rd.node.support === 'roller' ? '滚动' : '-';
+      html += `<td>${supportText}</td>`;
+      html += `<td class="rx-col">${(rd.rx / 1000).toFixed(3)}</td>`;
+      html += `<td class="ry-col">${(rd.ry / 1000).toFixed(3)}</td>`;
+      if (analysisMode === 'frame') {
+        html += `<td class="m-col">${(rd.m / 1000).toFixed(3)}</td>`;
+      }
+      html += '</tr>';
+    }
+
+    html += '<tr class="reaction-sum-row">';
+    html += `<td colspan="2">Σ 反力</td>`;
+    html += `<td class="rx-col">${(totalRx / 1000).toFixed(3)}</td>`;
+    html += `<td class="ry-col">${(totalRy / 1000).toFixed(3)}</td>`;
+    if (analysisMode === 'frame') {
+      html += `<td class="m-col">${(totalM / 1000).toFixed(3)}</td>`;
+    }
+    html += '</tr>';
+  }
+
+  html += '</tbody></table>';
+
+  const extFx = result.externalForces ? result.externalForces.fx : 0;
+  const extFy = result.externalForces ? result.externalForces.fy : 0;
+  const extM = result.externalForces ? result.externalForces.m : 0;
+
+  const diffFx = totalRx + extFx;
+  const diffFy = totalRy + extFy;
+  const diffM = totalM + extM;
+
+  const refFx = Math.max(Math.abs(extFx), Math.abs(totalRx), 1);
+  const refFy = Math.max(Math.abs(extFy), Math.abs(totalRy), 1);
+  const refM = Math.max(Math.abs(extM), Math.abs(totalM), 1);
+
+  const errFx = Math.abs(diffFx) / refFx * 100;
+  const errFy = Math.abs(diffFy) / refFy * 100;
+  const errM = analysisMode === 'frame' ? Math.abs(diffM) / refM * 100 : 0;
+
+  const maxErr = analysisMode === 'frame' ? Math.max(errFx, errFy, errM) : Math.max(errFx, errFy);
+  let checkClass = '';
+  let checkTitle = '';
+  if (maxErr < 0.5) {
+    checkClass = '';
+    checkTitle = '✓ 平衡校核通过';
+  } else if (maxErr < 2) {
+    checkClass = 'warn';
+    checkTitle = '⚠ 平衡误差偏大';
+  } else {
+    checkClass = 'error';
+    checkTitle = '✗ 平衡校核失败';
+  }
+
+  const getErrClass = (v) => v < 0.5 ? 'good' : v < 2 ? 'warn' : 'bad';
+
+  html += `<div class="equilibrium-check ${checkClass}">`;
+  html += `<div class="equilibrium-check-title">${checkTitle}</div>`;
+
+  html += '<div class="equilibrium-item">';
+  html += '<span class="equilibrium-label">ΣFx 平衡:</span>';
+  html += `<span class="equilibrium-values">`;
+  html += `外力:${(extFx/1000).toFixed(2)} + 反力:${(totalRx/1000).toFixed(2)} = ${(diffFx/1000).toFixed(4)}kN`;
+  html += `<span class="equilibrium-error ${getErrClass(errFx)}">${errFx.toFixed(3)}%</span>`;
+  html += '</span></div>';
+
+  html += '<div class="equilibrium-item">';
+  html += '<span class="equilibrium-label">ΣFy 平衡:</span>';
+  html += `<span class="equilibrium-values">`;
+  html += `外力:${(extFy/1000).toFixed(2)} + 反力:${(totalRy/1000).toFixed(2)} = ${(diffFy/1000).toFixed(4)}kN`;
+  html += `<span class="equilibrium-error ${getErrClass(errFy)}">${errFy.toFixed(3)}%</span>`;
+  html += '</span></div>';
+
+  if (analysisMode === 'frame') {
+    html += '<div class="equilibrium-item">';
+    html += '<span class="equilibrium-label">ΣM 平衡:</span>';
+    html += `<span class="equilibrium-values">`;
+    html += `外力矩:${(extM/1000).toFixed(2)} + 反力矩:${(totalM/1000).toFixed(2)} = ${(diffM/1000).toFixed(4)}kN·m`;
+    html += `<span class="equilibrium-error ${getErrClass(errM)}">${errM.toFixed(3)}%</span>`;
+    html += '</span></div>';
+  }
+
+  html += '</div>';
+
+  html += '<div class="reaction-legend">';
+  html += '<div class="reaction-legend-item"><span class="reaction-legend-color rx"></span>Rx水平反力</div>';
+  html += '<div class="reaction-legend-item"><span class="reaction-legend-color ry"></span>Ry竖向反力</div>';
+  if (analysisMode === 'frame') {
+    html += '<div class="reaction-legend-item"><span class="reaction-legend-color m"></span>M弯矩反力</div>';
+  }
+  html += '</div>';
+
+  content.innerHTML = html;
 }
 
 function updateButtonStates() {
@@ -4570,6 +4721,10 @@ document.addEventListener('keydown', (e) => {
 
 document.getElementById('btn-solve').addEventListener('click', solveCurrentLoadCase);
 document.getElementById('btn-solve-all').addEventListener('click', solveAllLoadCases);
+document.getElementById('toggle-reaction-arrows').addEventListener('change', (e) => {
+  renderer.showReactionArrows = e.target.checked;
+  render();
+});
 
 document.getElementById('btn-modal').addEventListener('click', () => {
   if (modalActive) {
