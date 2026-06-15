@@ -3670,6 +3670,7 @@ function updateReactionDisplay() {
 
   section.style.display = 'block';
 
+  const PIXEL_TO_METER = 0.01;
   const result = renderer.reactionResults;
   const supportNodes = nodes.filter(n => n.support && n.support !== 'free');
   const reactionsData = [];
@@ -3681,9 +3682,11 @@ function updateReactionDisplay() {
     const rx = reaction ? reaction.rx : 0;
     const ry = reaction ? reaction.ry : 0;
     const rm = (reaction && analysisMode === 'frame') ? reaction.m : 0;
+    const xMeters = sn.x * PIXEL_TO_METER;
+    const yMeters = sn.y * PIXEL_TO_METER;
     totalRx += rx;
     totalRy += ry;
-    totalM += rm;
+    totalM += rm + rx * yMeters - ry * xMeters;
     reactionsData.push({ node: sn, rx, ry, m: rm });
   }
 

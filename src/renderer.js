@@ -1039,7 +1039,9 @@ export class Renderer {
       this.drawPushoverHinges(nodes, members, nodeMap);
     }
 
-    if (this.hasResults && this.showReactionArrows && this.reactionResults) {
+    if (this.hasResults && this.showReactionArrows && this.reactionResults
+        && this.viewMode === 'single' && !this.modalMode && !this.bucklingMode
+        && !this.influenceActive && !this.pushoverActive) {
       this.drawReactionArrows(nodes);
     }
   }

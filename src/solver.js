@@ -405,9 +405,14 @@ export function solveFrame(nodes, members) {
   let totalExternalFy = 0;
   let totalExternalM = 0;
   for (const node of nodes) {
-    totalExternalFx += node.fx || 0;
-    totalExternalFy += node.fy || 0;
-    totalExternalM += node.m || 0;
+    const fx = node.fx || 0;
+    const fy = node.fy || 0;
+    const m = node.m || 0;
+    const xMeters = node.x * PIXEL_TO_METER;
+    const yMeters = node.y * PIXEL_TO_METER;
+    totalExternalFx += fx;
+    totalExternalFy += fy;
+    totalExternalM += m + fx * yMeters - fy * xMeters;
   }
   for (const member of members) {
     if (member.q && Math.abs(member.q) > 1e-10) {
@@ -421,12 +426,17 @@ export function solveFrame(nodes, members) {
         const len = Math.sqrt(dx * dx + dy * dy) || 1;
         const nx = -dy / len;
         const ny = dx / len;
-        totalExternalFx += totalQ * nx / 2 + totalQ * nx / 2;
-        totalExternalFy += totalQ * ny / 2 + totalQ * ny / 2;
-        const midX = (node1.x + node2.x) / 2;
-        const midY = (node1.y + node2.y) / 2;
-        totalExternalM += (totalQ * nx / 2) * node1.y + (totalQ * nx / 2) * node2.y
-                        - (totalQ * ny / 2) * node1.x - (totalQ * ny / 2) * node2.x;
+        const qfx1 = totalQ * nx / 2;
+        const qfx2 = totalQ * nx / 2;
+        const qfy1 = totalQ * ny / 2;
+        const qfy2 = totalQ * ny / 2;
+        totalExternalFx += qfx1 + qfx2;
+        totalExternalFy += qfy1 + qfy2;
+        const x1 = node1.x * PIXEL_TO_METER;
+        const y1 = node1.y * PIXEL_TO_METER;
+        const x2 = node2.x * PIXEL_TO_METER;
+        const y2 = node2.y * PIXEL_TO_METER;
+        totalExternalM += (qfx1 * y1 - qfy1 * x1) + (qfx2 * y2 - qfy2 * x2);
       }
     }
   }
